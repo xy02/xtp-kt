@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+//option java_outer_classname = "BasicProto";
+
+/*
+    XTP(X Transfer Protocol)
+    协议版本：0.1
+    定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
+    发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
+
+    定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，“生产者”生产的是多个有序的“消息（Frame.message）”。
+    “生产者”必须满足规则：发送的“消息”的总数必须小于等于“消费者”发送的“拉取（Frame.pull）”总和。
+
+    流生命周期举例：
+    header->
+    <-pull
+    message->
+    message->
+    <-pull
+    message->
+    <-error
+    end->
+ */
+package xtp;
+
+//数据帧，连接上的基础数据载体
+message Frame {
+    //流ID，每开启新流值加1，生命周期已结束的流的ID可作为新流重新开启
+    int32 stream_id = 1;
+    oneof type {
+        //端信息，stream_id必须为0，只能发送一次
+        Info info = 2;
+        //流首部，表示生产者开启了条新流
+        //stream_id必须大于0
+        Header header = 3;
+        //流消息，表示生产者发送了一条流消息
+        //必须发送过流首部后，并等待对端pull后才能发送不超过pull总和的消息个数
+        Message message = 4;
+        //结束流，表示生产者结束流，stream_id为0时表示关闭连接
+        End end = 5;
+        //拉取数，表示消费者拉取对端消息的增量，大于0，用于消息的流量控制
+        int32 pull = 6;
+        //错误，表示消费者因错误而中止流，等待生产者发送end后流生命周期结束
+        Error error = 7;
+    }
+}
+
+//端信息
+message Info {
+    //应用证明（可空）
+    AppCert app_cert = 1;
+    //注册，键为流类型名stream_type，表示发送端注册此流类型
+    map<string, Accept> register = 2;
+}
+
+//应用证明
+message AppCert {
+    //应用信息的二进制
+    bytes app_info = 1;
+    //应用信息的签名
+    bytes app_sign = 2;
+    //签名算法
+    SignAlg sign_alg = 3;
+}
+
+//应用信息
+message AppInfo {
+    //创建时刻（毫秒）
+    int64 created_at = 1;
+    //应用名
+    string name = 2;
+    //版本（可空）
+    string version = 3;
+    //版本号（可空）
+    int32 version_code = 4;
+}
+
+//签名算法
+enum SignAlg {
+    //RFC8032(https://tools.ietf.org/html/rfc8032)
+    Ed25519 = 0;
+}
+
+//流的接受条件，表示发送端接受的流类型
+message Accept {
+    //最大并存流数
+    int32 max_concurrent_stream = 1;
+    //信息类型（可空），例："client.NewTxRequest"
+    string info_type = 2;
+    //信息序列化器（可空），例："json","cbor","binary"
+    string info_serializer = 3;
+    //流数据的类型（可空），例："client.SQLRequest"
+    string data_type = 4;
+    //流数据的序列化器（可空），例："json","cbor","binary"
+    string data_serializer = 5;
+}
+
+//流首部，表示发送端请求创建一个流，只能请求对端注册过的流类型
+message Header {
+    //流类型名
+    string stream_type = 1;
+    //父流ID，表示对端创建的父流ID，本端能发送此流首部的前提是父流注册接受了此流类型stream_type
+    int32 parent_stream_id = 2;
+    //注册（可空），键为流类型名stream_type，表示发送端在此流上注册可接受的流类型，流结束时就不再接受
+    map<string, Accept> register = 3;
+    //信息（可空）
+    bytes info = 4;
+    //信息类型（可空），例："client.NewTxRequest"
+    string info_type = 5;
+    //信息序列化器（可空），例："json","cbor","binary"
+    string info_serializer = 6;
+    //流数据的类型（可空），例："client.SQLRequest"
+    string data_type = 7;
+    //流数据的序列化器（可空），例："json","cbor","binary"
+    string data_serializer = 8;
+}
+
+//流消息
+message Message {
+    //数据
+    bytes data = 1;
+}
+
+//流结束
+message End {
+    //错误（可空），值不为空时表示因错误而关闭流
+    Error error = 1;
+}
+
+//错误
+message Error {
+    //错误类型
+    string type = 1;
+    //错误的信息（可空）
+    string message = 2;
+}
