@@ -9,6 +9,7 @@ import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.PublishSubject
 import xtp.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 data class Socket(
@@ -20,7 +21,7 @@ data class Connection(
     val remoteInfo: Info,
     val getStreamsByType: (String) -> Observable<Stream>,
     //创建流
-    val createChannel: (header: Header.Builder) -> Single<Channel>,
+    val createChannel: (header: Header.Builder) -> Channel,
 )
 
 data class Channel(
@@ -34,7 +35,7 @@ data class Stream(
     val header: Header,
     val onData: Observable<ByteArray>,
     val dataPuller: Observer<Int>,
-    val createChannel: (header: Header.Builder) -> Single<Channel>,
+    val createChannel: (header: Header.Builder) -> Channel,
 )
 
 data class RemoteError(
@@ -96,11 +97,19 @@ internal fun createChildChannel(
     ctx: Context,
     parentStreamId: Int,
     remoteRegister: Map<String, Accept>,
-): (header: Header.Builder) -> Single<Channel> = { header ->
+    queueSize: Int = 1000,
+): (header: Header.Builder) -> Channel = { header ->
+    val dataSender = PublishSubject.create<ByteArray>()
     //缺少验证accept
-    if (!remoteRegister.containsKey(header.streamType))
-        Single.error(ProtocolError("the stream type is not accepted"))
-    else {
+    if (!remoteRegister.containsKey(header.streamType)) {
+        val e = ProtocolError("the stream type is not accepted")
+        Channel(
+            onPull = Observable.error(e),
+            onAvailable = Observable.error(e),
+            dataSender = dataSender,
+            getStreamsByType = { Observable.error(e) },
+        )
+    } else {
         val streamId = ctx.newStreamId()
         val messageSender = PublishSubject.create<Message>()
         val remoteError = ctx.getErrorFramesByStreamId(streamId)
@@ -141,34 +150,54 @@ internal fun createChildChannel(
             .distinctUntilChanged()
             .replay(1)
             .autoConnect()
-        val dataSender = PublishSubject.create<ByteArray>()
-        val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(streamId)
-        val getStreamsByType = getStreams(header.registerMap, childHeaderFrames, ctx)
-        Single.just(
-            Channel(
-                onPull = pulls,
-                onAvailable = isAvailable,
-                dataSender = dataSender,
-                getStreamsByType = getStreamsByType,
-            )
-        ).doOnSubscribe {
-            //side effect
+        val queue = ConcurrentLinkedQueue<ByteArray>()
+        val dataFromQueue = pulls
+            .flatMap { pull ->
+                Observable
+                    .generate<ByteArray> { emitter ->
+                        val v = queue.poll()
+                        if (v != null) emitter.onNext(v)
+                        else emitter.onComplete()
+                    }
+                    .take(pull.toLong())
+            }
+        //side effect
+        Observable.merge(
+            dataFromQueue,
             dataSender.withLatestFrom(isAvailable,
                 { data, ok ->
-                    if (ok) {
-                        val message = Message.newBuilder().setData(ByteString.copyFrom(data)).build()
-                        messageSender.onNext(message)
+                    if (ok) Observable.just(data)
+                    else Observable.empty<ByteArray>().doOnComplete {
+                        if (queueSize > 0) {
+                            if (queue.size == queueSize)
+                                queue.poll()
+                            queue.add(data)
+                        }
                     }
                 })
-                .subscribe(
-                    {},
-                    messageSender::onError,
-                    messageSender::onComplete
-                )
-            //send header
-            val frame = Frame.newBuilder().setStreamId(streamId).setHeader(header.setParentStreamId(parentStreamId))
-            ctx.sendFrame(frame.build())
-        }
+                .flatMap { it }
+        )
+            .doOnSubscribe {
+                //send header
+                val frame = Frame.newBuilder().setStreamId(streamId).setHeader(header.setParentStreamId(parentStreamId))
+                ctx.sendFrame(frame.build())
+            }
+            .subscribe(
+                { data ->
+                    val message = Message.newBuilder().setData(ByteString.copyFrom(data)).build()
+                    messageSender.onNext(message)
+                },
+                messageSender::onError,
+                messageSender::onComplete
+            )
+        val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(streamId)
+        val getStreamsByType = getStreams(header.registerMap, childHeaderFrames, ctx)
+        Channel(
+            onPull = pulls,
+            onAvailable = isAvailable,
+            dataSender = dataSender,
+            getStreamsByType = getStreamsByType,
+        )
     }
 }
 
