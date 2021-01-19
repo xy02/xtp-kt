@@ -36,7 +36,17 @@ data class Stream(
     val onData: Observable<ByteArray>,
     val dataPuller: Observer<Int>,
     val createChannel: (header: Header.Builder) -> Channel,
+    val pipeChannels: (PipeConfig) -> UnPipe,
 )
+
+data class PipeConfig(
+    val channelMap: Map<Channel, Observable<ByteArray>>,
+    val pullIncrement: Int = 1000,
+)
+
+data class UnPipeError(
+    override val message: String = "",
+) : Throwable()
 
 data class RemoteError(
     val type: String,
@@ -46,6 +56,8 @@ data class RemoteError(
 data class ProtocolError(
     override val message: String = "",
 ) : Throwable()
+
+typealias UnPipe = () -> Unit
 
 internal data class WindowState(
     val windowSize: Int,
@@ -85,7 +97,7 @@ fun init(
         getEndFramesByStreamId = getSubValues(endFrames, Frame::getStreamId),
     )
     val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(0)
-    val getStreamsByType = getStreams(myInfo.registerMap, childHeaderFrames, ctx)
+    val getStreamsByType = getStreams(ctx, myInfo.registerMap, childHeaderFrames)
     val onceInfo = getFramesByType(Frame.TypeCase.INFO).map { it.info }.take(1).singleOrError()
     return onceInfo.map { info ->
         val create = createChildChannel(ctx, 0, info.registerMap)
@@ -191,7 +203,7 @@ internal fun createChildChannel(
                 messageSender::onComplete
             )
         val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(streamId)
-        val getStreamsByType = getStreams(header.registerMap, childHeaderFrames, ctx)
+        val getStreamsByType = getStreams(ctx, header.registerMap, childHeaderFrames)
         Channel(
             onPull = pulls,
             onAvailable = isAvailable,
@@ -202,9 +214,9 @@ internal fun createChildChannel(
 }
 
 internal fun getStreams(
+    ctx: Context,
     register: Map<String, Accept>,
     childHeaderFrames: Observable<Frame>,
-    ctx: Context,
 ): (String) -> Observable<Stream> {
     val m = ConcurrentHashMap<String, Observable<Frame>>()
     val getHeaderFramesByStreamType = getSubValues(childHeaderFrames) { frame -> frame.header.streamType }
@@ -260,12 +272,55 @@ internal fun createStream(
         .map { builder -> builder.setStreamId(streamId).build() }
         .doOnNext { ctx.sendFrame(it) }
     pullFrames.subscribe() //side effect
+    val onData = messages.map { it.data.toByteArray() }
     return Stream(
         header = header,
-        onData = messages.map { it.data.toByteArray() },
+        onData = onData,
         dataPuller = dataPuller,
         createChannel = createChildChannel(ctx, streamId, header.registerMap),
+        pipeChannels = pipeChannels(onData, dataPuller),
     )
+}
+
+internal fun pipeChannels(
+    onData: Observable<ByteArray>,
+    dataPuller: Observer<Int>,
+): (PipeConfig) -> UnPipe {
+    return { (channelMap, pullIncrement) ->
+        val clearMap = channelMap.mapValues { (channel, outputData) ->
+            val dataSender = channel.dataSender
+            //向下游输出处理过的数据
+            val disposable = outputData.subscribe(dataSender::onNext, dataSender::onError, dataSender::onComplete)
+            return@mapValues {
+                disposable.dispose()
+                dataSender.onError(UnPipeError())
+            }
+        }
+        val availableList = channelMap.map { (channel, _) -> channel.onAvailable }
+        val onAllAvailable = Observable.combineLatest(availableList) {
+            it.fold(true, { pre, available -> pre && available as Boolean })
+        }
+        var pendingPull = pullIncrement
+        val d = onData.map { 1 }
+            .withLatestFrom(onAllAvailable.doOnNext { ok ->
+                if (ok) {
+                    val pull = pendingPull
+                    pendingPull = 0
+                    //向上游拉取
+                    dataPuller.onNext(pull)
+                }
+            }, { pull, ok ->
+                if (ok) dataPuller.onNext(pull) else pendingPull += pull
+            })
+            .onErrorComplete()
+            .subscribe()
+        ;
+        {
+            d.dispose()
+            clearMap.forEach { (_, clear) -> clear() }
+            dataPuller.onError(UnPipeError())
+        }
+    }
 }
 
 internal fun getPullIncrements(
