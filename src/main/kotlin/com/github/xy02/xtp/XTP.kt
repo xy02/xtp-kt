@@ -41,7 +41,7 @@ data class Stream(
 
 data class PipeConfig(
     val channelMap: Map<Channel, Observable<ByteArray>>,
-    val pullIncrement: Int = 1000,
+    val pullIncrement: Int = 10000,
 )
 
 data class UnPipeError(
@@ -99,10 +99,16 @@ fun init(
     val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(0)
     val getStreamsByType = getStreams(ctx, myInfo.registerMap, childHeaderFrames)
     val onceInfo = getFramesByType(Frame.TypeCase.INFO).map { it.info }.take(1).singleOrError()
-    return onceInfo.map { info ->
-        val create = createChildChannel(ctx, 0, info.registerMap)
-        Connection(remoteInfo = info, getStreamsByType = getStreamsByType, createChannel = create)
-    }
+    return onceInfo
+        .doOnSubscribe {
+            //send myInfo
+            val frame = Frame.newBuilder().setStreamId(0).setInfo(myInfo)
+            ctx.sendFrame(frame.build())
+        }
+        .map { info ->
+            val create = createChildChannel(ctx, 0, info.registerMap)
+            Connection(remoteInfo = info, getStreamsByType = getStreamsByType, createChannel = create)
+        }
 }
 
 internal fun createChildChannel(

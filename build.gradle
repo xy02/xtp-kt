@@ -2,10 +2,14 @@ plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.4.21'
     id "com.google.protobuf" version "0.8.14"
     id 'idea'
+//    id 'application'
 }
 
 group 'me.xy02'
-version '0.0.1'
+version '0.0.2'
+//application {
+//    mainClassName ="com.github.xy02.example.ClientKt"
+//}
 
 repositories {
     mavenCentral()
@@ -15,6 +19,8 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
     implementation "io.reactivex.rxjava3:rxjava:3.0.8"
+
+//    implementation 'io.vertx:vertx-core:3.9.3'
 }
 
 test {
