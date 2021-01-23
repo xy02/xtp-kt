@@ -1,20 +1,21 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.PipeConfig
+import com.github.xy02.xtp.init
+import com.github.xy02.xtp.nioServerSockets
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
 import xtp.Header
 import xtp.Info
-import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 
 fun main(args: Array<String>) {
 
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
 
-    val source = nioSocketsSource()
-    val sockets = nioServerSockets(source)
+    val sockets = nioServerSockets()
 
     val myInfo = Info.newBuilder()
         .putRegister("Acc", Accept.newBuilder().setMaxConcurrentStream(10).build())
@@ -36,7 +37,7 @@ fun main(args: Array<String>) {
 //累加收到的数据个数
 private fun acc(conn: Connection) {
     val onStream = conn.getStreamsByType("Acc")
-    onStream.subscribe { stream ->
+    onStream.onErrorComplete().subscribe { stream ->
         //验证请求
         println("onHeader:${stream.header}")
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
@@ -44,15 +45,15 @@ private fun acc(conn: Connection) {
         val handledData = stream.onData
             .scan(0) { acc, _ -> acc + 1 }
             .map { acc ->
-//                val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
-//                json.toByteArray()
+                val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
+                json.toByteArray()
 //                val json = io.vertx.core.json.JsonObject()
 //                    .put("time", df.format(System.currentTimeMillis()))
 //                    .put("acc", acc)
 //                json.toBuffer().bytes
-                val bb = ByteBuffer.allocate(4)
-                bb.putInt(acc)
-                bb.array()
+//                val bb = java.nio.ByteBuffer.allocate(4)
+//                bb.putInt(acc)
+//                bb.array()
             }
         //创建下游流（会发送header）
         val accReplyChannel = stream.createChannel(Header.newBuilder().setStreamType("AccReply"))

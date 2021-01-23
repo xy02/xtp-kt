@@ -1,6 +1,9 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.Stream
+import com.github.xy02.xtp.init
+import com.github.xy02.xtp.nioClientSocket
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
@@ -10,11 +13,8 @@ import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val myInfo = Info.newBuilder()
-        .putRegister("xx", Accept.newBuilder().setMaxConcurrentStream(10).build())
-        .build()
-    val source = nioSocketsSource()
-    val theSocket = nioClientSocket(source, InetSocketAddress("localhost", 8001)).toObservable()
+    val myInfo = Info.getDefaultInstance()
+    val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
     theSocket
         .flatMapSingle { socket ->
             println("onSocket")

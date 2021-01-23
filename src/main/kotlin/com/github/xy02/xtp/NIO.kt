@@ -18,6 +18,11 @@ import java.util.concurrent.atomic.AtomicInteger
 
 data class TCPServerOptions(
     val address: SocketAddress = InetSocketAddress(8001),
+    val source: SocketsSource = nioSocketsSource(),
+)
+
+data class TCPClientOptions(
+    val source: SocketsSource = nioSocketsSource(),
 )
 
 data class SocketsSource(
@@ -103,9 +108,9 @@ fun nioSocketsSource(): SocketsSource {
 }
 
 fun nioServerSockets(
-    source: SocketsSource,
     options: TCPServerOptions = TCPServerOptions(),
 ): Observable<Socket> {
+    val source = options.source
     val gid = source.newGroupId()
     return source.getSocketContextByGroupId(gid)
         .doOnSubscribe {
@@ -123,9 +128,10 @@ fun nioServerSockets(
 }
 
 fun nioClientSocket(
-    source: SocketsSource,
     address: SocketAddress,
+    options: TCPClientOptions = TCPClientOptions(),
 ): Single<Socket> {
+    val source = options.source
     return Single.fromCallable { source.newGroupId() }
         .flatMap { gid ->
 //            println("gid $gid")
@@ -147,43 +153,44 @@ fun nioClientSocket(
 
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
-    val sender = PublishSubject.create<ByteArray>()
+    val theEnd = PublishSubject.create<Unit>()
     val buffers = Observable.create<ByteArray> { emitter1 ->
-        val d = sender
-//            .observeOn(Schedulers.io())
-            .subscribe(
-                { buf ->
-//                            System.out.println("to send buf:"+ buf);
-                    try {
-                        val size = buf.size
-                        val lengthBuf = ByteBuffer.allocate(3)
-                            .put((size shr 16 and 0xff).toByte())
-                            .put((size shr 8 and 0xff).toByte())
-                            .put((size and 0xff).toByte())
-                        lengthBuf.flip()
-                        while (lengthBuf.hasRemaining()) sc.write(lengthBuf)
-                        val bodyBuf = ByteBuffer.wrap(buf)
-                        while (bodyBuf.hasRemaining()) sc.write(bodyBuf)
-//                    println("write $bodyBuf on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
-                    } catch (e: Exception) {
-                        println("write SocketChannel: $e")
-                        sc.close()
-                    }
-                },
-                { err ->
-                    println("sender onError:$err")
-                    sc.close()
-                },
-                {
-                    println("sender onComplete")
-                    sc.close()
-                }
-            )
         sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
-        emitter1.setDisposable(Disposable.fromAction { d.dispose() })
+        emitter1.setDisposable(Disposable.fromAction { theEnd.onComplete() })
     }
 //        .observeOn(Schedulers.computation())
         .share()
+    val sender = PublishSubject.create<ByteArray>()
+    sender
+//        .observeOn(Schedulers.io())
+        .takeUntil(theEnd)
+        .subscribe(
+            { buf ->
+                try {
+                    val size = buf.size
+                    val lengthBuf = ByteBuffer.allocate(3)
+                        .put((size shr 16 and 0xff).toByte())
+                        .put((size shr 8 and 0xff).toByte())
+                        .put((size and 0xff).toByte())
+                    lengthBuf.flip()
+                    while (lengthBuf.hasRemaining()) sc.write(lengthBuf)
+                    val bodyBuf = ByteBuffer.wrap(buf)
+                    while (bodyBuf.hasRemaining()) sc.write(bodyBuf)
+//                    println("write $bodyBuf on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+                } catch (e: Exception) {
+                    println("write SocketChannel: $e")
+                    sc.close()
+                }
+            },
+            { err ->
+                println("sender onError:$err")
+                sc.close()
+            },
+            {
+                println("sender onComplete")
+                sc.close()
+            }
+        )
     return Socket(buffers, sender)
 }
 
