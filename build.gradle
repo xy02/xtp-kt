@@ -6,7 +6,7 @@ plugins {
 }
 
 group 'me.xy02'
-version '0.0.3'
+version '0.1.0'
 //application {
 //    mainClassName ="com.github.xy02.example.ClientKt"
 //}
@@ -19,6 +19,7 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
     implementation "io.reactivex.rxjava3:rxjava:3.0.8"
+    implementation 'net.i2p.crypto:eddsa:0.3.0'
 
 //    implementation 'io.vertx:vertx-core:3.9.3'
 }

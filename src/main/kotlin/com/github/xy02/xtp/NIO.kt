@@ -153,17 +153,15 @@ fun nioClientSocket(
 
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
-    val theEnd = PublishSubject.create<Unit>()
+    val sender = PublishSubject.create<ByteArray>()
     val buffers = Observable.create<ByteArray> { emitter1 ->
         sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
-        emitter1.setDisposable(Disposable.fromAction { theEnd.onComplete() })
+        emitter1.setDisposable(Disposable.fromAction { sender.onComplete() })
     }
 //        .observeOn(Schedulers.computation())
         .share()
-    val sender = PublishSubject.create<ByteArray>()
     sender
 //        .observeOn(Schedulers.io())
-        .takeUntil(theEnd)
         .subscribe(
             { buf ->
                 try {

@@ -7,7 +7,15 @@ import io.reactivex.rxjava3.core.Observer
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.PublishSubject
+import net.i2p.crypto.eddsa.EdDSAEngine
+import net.i2p.crypto.eddsa.EdDSAPrivateKey
+import net.i2p.crypto.eddsa.EdDSAPublicKey
+import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable
+import net.i2p.crypto.eddsa.spec.EdDSAPrivateKeySpec
+import net.i2p.crypto.eddsa.spec.EdDSAPublicKeySpec
 import xtp.*
+import java.security.MessageDigest
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -22,6 +30,7 @@ data class Connection(
     val getStreamsByType: (String) -> Observable<Stream>,
     //创建流
     val createChannel: (header: Header.Builder) -> Channel,
+    val remoteAppInfo: AppInfo? = null,
 )
 
 data class Channel(
@@ -44,6 +53,11 @@ data class PipeConfig(
     val pullIncrement: Int = 10000,
 )
 
+data class InitOptions(
+    val denyAnonymousApp: Boolean = false,
+    val appPublicKeyMap: Map<String, ByteArray> = mapOf(),
+)
+
 data class UnPipeError(
     override val message: String = "",
 ) : Throwable()
@@ -56,6 +70,11 @@ data class RemoteError(
 data class ProtocolError(
     override val message: String = "",
 ) : Throwable()
+
+data class VerificationFailedError(
+    override val message: String = "",
+) : Throwable()
+
 
 typealias UnPipe = () -> Unit
 
@@ -75,40 +94,111 @@ internal data class Context(
     val getMessageFramesByStreamId: (Int) -> Observable<Frame>,
 )
 
-fun init(
-    socket: Socket,
-    myInfo: Info,
-): Single<Connection> {
-    val frames = socket.onBytes.map(Frame::parseFrom).share()
-    val getFramesByType = getSubValues(frames) { frame -> frame.typeCase }
-    val headerFrames = getFramesByType(Frame.TypeCase.HEADER)
-    val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
-    val endFrames = getFramesByType(Frame.TypeCase.END)
-    val pullFrames = getFramesByType(Frame.TypeCase.PULL)
-    val errorFrames = getFramesByType(Frame.TypeCase.ERROR)
-    val sid = AtomicInteger()
-    val ctx = Context(
-        newStreamId = { sid.getAndIncrement() },
-        sendFrame = { frame: Frame -> socket.bytesSender.onNext(frame.toByteArray()) },
-        getErrorFramesByStreamId = getSubValues(errorFrames, Frame::getStreamId),
-        getPullFramesByStreamId = getSubValues(pullFrames, Frame::getStreamId),
-        getHeaderFramesByParentStreamId = getSubValues(headerFrames) { frame -> frame.header.parentStreamId },
-        getMessageFramesByStreamId = getSubValues(messageFrames, Frame::getStreamId),
-        getEndFramesByStreamId = getSubValues(endFrames, Frame::getStreamId),
-    )
-    val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(0)
-    val getStreamsByType = getStreams(ctx, myInfo.registerMap, childHeaderFrames)
-    val onceInfo = getFramesByType(Frame.TypeCase.INFO).map { it.info }.take(1).singleOrError()
-    return onceInfo
-        .doOnSubscribe {
-            //send myInfo
-            val frame = Frame.newBuilder().setStreamId(0).setInfo(myInfo)
-            ctx.sendFrame(frame.build())
+fun initWith(onMyInfo: Single<Info>, options: InitOptions = InitOptions()): (Socket) -> Single<Connection> {
+    val singleMyInfoPair = onMyInfo.map { myInfo ->
+        val bytes = Frame.newBuilder().setStreamId(0).setInfo(myInfo).build().toByteArray()
+        Pair(bytes, myInfo)
+    }.cache()
+    return { socket ->
+        singleMyInfoPair.flatMap { (myInfoBytes, myInfo) ->
+            val sendEndWithError = { err: Throwable, streamId: Int ->
+                val end = End.newBuilder().setError(
+                    Error.newBuilder()
+                        .setType(err.javaClass.name)
+                        .setMessage(err.message)
+                )
+                val frame = Frame.newBuilder().setStreamId(streamId).setEnd(end).build()
+                socket.bytesSender.onNext(frame.toByteArray())
+            }
+            val frames = socket.onBytes.map(Frame::parseFrom).share()
+            val getFramesByType = getSubValues(frames) { frame -> frame.typeCase }
+            val headerFrames = getFramesByType(Frame.TypeCase.HEADER)
+            val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
+            val endFrames = getFramesByType(Frame.TypeCase.END)
+            val pullFrames = getFramesByType(Frame.TypeCase.PULL)
+            val errorFrames = getFramesByType(Frame.TypeCase.ERROR)
+            val sid = AtomicInteger()
+            val ctx = Context(
+                newStreamId = { sid.getAndIncrement() },
+                sendFrame = { frame: Frame -> socket.bytesSender.onNext(frame.toByteArray()) },
+                getErrorFramesByStreamId = getSubValues(errorFrames, Frame::getStreamId),
+                getPullFramesByStreamId = getSubValues(pullFrames, Frame::getStreamId),
+                getHeaderFramesByParentStreamId = getSubValues(headerFrames) { frame -> frame.header.parentStreamId },
+                getMessageFramesByStreamId = getSubValues(messageFrames, Frame::getStreamId),
+                getEndFramesByStreamId = getSubValues(endFrames, Frame::getStreamId),
+            )
+            val childHeaderFrames = ctx.getHeaderFramesByParentStreamId(0)
+            val getStreamsByType = getStreams(ctx, myInfo.registerMap, childHeaderFrames)
+            val singleRemoteInfo = getFramesByType(Frame.TypeCase.INFO).map { it.info }.take(1).singleOrError()
+            singleRemoteInfo
+                .doOnSubscribe {
+                    //send myInfo
+                    socket.bytesSender.onNext(myInfoBytes)
+                }
+                .flatMap { remoteInfo ->
+                    val create = createChildChannel(ctx, 0, remoteInfo.registerMap)
+                    if (remoteInfo.appCert.serializedSize == 0 && !options.denyAnonymousApp)
+                        Single.just(
+                            Connection(
+                                remoteInfo = remoteInfo,
+                                getStreamsByType = getStreamsByType, createChannel = create
+                            )
+                        )
+                    else getValidAppInfo(remoteInfo.appCert, options.appPublicKeyMap)
+                        .map { appInfo ->
+                            Connection(
+                                remoteInfo = remoteInfo, getStreamsByType = getStreamsByType,
+                                createChannel = create, remoteAppInfo = appInfo
+                            )
+                        }
+                        .doOnError { err ->
+                            sendEndWithError(err, 0)
+                            //关闭连接
+                            socket.bytesSender.onComplete()
+                        }
+                }
         }
-        .map { info ->
-            val create = createChildChannel(ctx, 0, info.registerMap)
-            Connection(remoteInfo = info, getStreamsByType = getStreamsByType, createChannel = create)
+    }
+}
+
+fun getValidAppInfo(appCert: AppCert, appPublicKeyMap: Map<String, ByteArray>): Single<AppInfo> {
+    return Single.create { emitter ->
+        val appInfo = AppInfo.parseFrom(appCert.appInfo)
+        val pk = appPublicKeyMap[appInfo.name] ?: throw VerificationFailedError()
+        val spec = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519)
+        val keySpec = EdDSAPublicKeySpec(pk, spec)
+        val key = EdDSAPublicKey(keySpec)
+        //Signature sgr = Signature.getInstance("EdDSA", "I2P");
+        val sgr = EdDSAEngine(MessageDigest.getInstance(spec.hashAlgorithm))
+        sgr.initVerify(key)
+        val infoBytes = appCert.appInfo.toByteArray()
+        sgr.update(infoBytes)
+        val ok = sgr.verify(appCert.appSign.toByteArray())
+        if (ok) emitter.onSuccess(appInfo) else throw VerificationFailedError()
+    }
+}
+
+fun makeAppCertWithEd25519(appInfo: AppInfo, seed: ByteArray): Single<AppCert> {
+    return Single.create { emitter ->
+        if (appInfo.name.isNullOrEmpty()) {
+            emitter.onError(Exception("require name of appInfo"))
+            return@create
         }
+        val spec = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519)
+        val keySpec = EdDSAPrivateKeySpec(seed, spec)
+        val key = EdDSAPrivateKey(keySpec)
+        val sgr = EdDSAEngine(MessageDigest.getInstance(spec.hashAlgorithm))
+        sgr.initSign(key)
+        val info = appInfo.toByteString()
+        sgr.update(info.toByteArray())
+        val sig = sgr.sign()
+        val cert = AppCert.newBuilder()
+            .setAppInfo(info)
+            .setAppSign(ByteString.copyFrom(sig))
+            .setSignAlg(SignAlg.Ed25519)
+            .build()
+        emitter.onSuccess(cert)
+    }
 }
 
 internal fun createChildChannel(

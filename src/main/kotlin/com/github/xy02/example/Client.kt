@@ -1,24 +1,27 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.Stream
-import com.github.xy02.xtp.init
-import com.github.xy02.xtp.nioClientSocket
+import com.github.xy02.xtp.*
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
+import xtp.AppInfo
 import xtp.Header
 import xtp.Info
 import java.net.InetSocketAddress
+import java.util.*
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val myInfo = Info.getDefaultInstance()
+    val priKeySeed = Base64.getDecoder().decode("lWOsghdX5IMTXq22Z8Lbl0MoMwCJrBSE0OzstHaWbJ0=")
+    val appInfo = AppInfo.newBuilder().setName("someApp").build()
+    val singleAppCert = makeAppCertWithEd25519(appInfo, priKeySeed)
+    val singleMyInfo = singleAppCert.map { Info.newBuilder().setAppCert(it).build() }
+    val init = initWith(singleMyInfo)
     val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
     theSocket
         .flatMapSingle { socket ->
             println("onSocket")
-            init(socket, myInfo)
+            init(socket)
         }
         .retryWhen {
             it.flatMap { e ->

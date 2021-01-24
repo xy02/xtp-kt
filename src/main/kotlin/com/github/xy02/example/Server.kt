@@ -1,28 +1,33 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.PipeConfig
-import com.github.xy02.xtp.init
-import com.github.xy02.xtp.nioServerSockets
+import com.github.xy02.xtp.*
+import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
 import xtp.Header
 import xtp.Info
 import java.text.SimpleDateFormat
+import java.util.*
 
 fun main(args: Array<String>) {
-
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
-
+    val pubKey = Base64.getDecoder().decode("zxj0S8mMIE0QDeJqOMPSll0LJBZr0bnn7fdw+/fpuRY=")
     val sockets = nioServerSockets()
-
     val myInfo = Info.newBuilder()
         .putRegister("Acc", Accept.newBuilder().setMaxConcurrentStream(10).build())
         .build()
-    sockets.flatMapSingle { socket ->
+    val init = initWith(
+        Single.just(myInfo), InitOptions(
+            denyAnonymousApp = false,
+            appPublicKeyMap = mapOf("someApp" to pubKey)
+        )
+    )
+    sockets.flatMapMaybe { socket ->
         println("onSocket")
-        init(socket, myInfo)
+        init(socket)
+            .doOnError { err -> println("init err:$err") }
+            .onErrorComplete()
     }.subscribeOn(Schedulers.newThread())
         .subscribe(
             { conn ->
