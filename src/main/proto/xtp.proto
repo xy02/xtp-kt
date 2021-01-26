@@ -11,22 +11,42 @@ option java_multiple_files = true;
 
     定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，“生产者”生产的是多个有序的“消息（Frame.message）”。
     “生产者”必须满足规则：发送的“消息”的总数必须小于等于“消费者”发送的“拉取（Frame.pull）”总和。
+    “消费者”可以根据“生产者”提供的“流的接受条件”创建新的“子流”。
+
+    一条流以生产者发送header开始生命周期，以满足以下条件其中之一结束生命周期：
+    `流消费者发送close前未发送过pull，则发送close后流生命周期结束
+    `流消费者发送close前已收到生产者发送的end，则发送close后流生命周期结束
+    `流消费者发送close前未收到生产者发送的end，则收到end后流生命周期结束
+    注：消费者创建的所有“子流”的生命周期结束后才能发送close
 
     流生命周期举例：
+    例一：
+    header->
+    <-close
+
+    例二：
+    header->
+    <-pull
+    message->
+    message->
+    end->
+    <-close
+
+    例三：
     header->
     <-pull
     message->
     message->
     <-pull
     message->
-    <-error
+    <-close
     end->
  */
 package xtp;
 
 //数据帧，连接上的基础数据载体
 message Frame {
-    //流ID，每开启新流值加1，生命周期已结束的流的ID可作为新流重新开启
+    //流ID，每开启新流值加1，生命周期已结束的流的ID可作为新流重新开启，0表示连接
     int32 stream_id = 1;
     oneof type {
         //端信息，stream_id必须为0，只能发送一次
@@ -37,12 +57,13 @@ message Frame {
         //流消息，表示生产者发送了一条流消息
         //必须发送过流首部后，并等待对端pull后才能发送不超过pull总和的消息个数
         Message message = 4;
-        //结束流，表示生产者结束流，stream_id为0时表示关闭连接
+        //结束流，表示生产者期望结束流，当流两端分别发送end与close时流生命周期结束，stream_id为0时表示关闭连接
         End end = 5;
         //拉取数，表示消费者拉取对端消息的增量，大于0，用于消息的流量控制
         int32 pull = 6;
-        //错误，表示消费者因错误而中止流，等待生产者发送end后流生命周期结束
-        Error error = 7;
+        //关闭流，表示消费者期望关闭流，stream_id为0时表示关闭连接
+        //所以子流生命周期结束后才能发送此close
+        Close close = 7;
     }
 }
 
@@ -78,7 +99,7 @@ message AppInfo {
 
 //签名算法
 enum SignAlg {
-    //RFC8032(https://tools.ietf.org/html/rfc8032)
+    //Edwards-Curve Digital Signature Algorithm (EdDSA), https://tools.ietf.org/html/rfc8032
     Ed25519 = 0;
 }
 
@@ -86,15 +107,20 @@ enum SignAlg {
 message Accept {
     //最大并存流数
     int32 max_concurrent_stream = 1;
-    //信息类型（可空），例："client.NewTxRequest"
-    string info_type = 2;
-    //信息序列化器（可空），例："json","cbor","binary"
-    string info_serializer = 3;
-    //流数据的类型（可空），例："client.SQLRequest"
-    string data_type = 4;
-    //流数据的序列化器（可空），例："json","cbor","binary"
-    string data_serializer = 5;
+//    //信息序列化器（可空）
+//    repeated Serializer info_serializer = 2;
+//    //流数据的序列化器（可空）
+//    repeated Serializer data_serializer = 3;
 }
+
+//enum Serializer {
+//    //二进制, 表示使用原始数据，不做任何序列化
+//    Raw = 0;
+//    //JSON字符串, https://tools.ietf.org/html/rfc4627
+//    JSON = 1;
+//    //Concise Binary Object Representation (CBOR), https://tools.ietf.org/html/rfc7049
+//    CBOR = 2;
+//}
 
 //流首部，表示发送端请求创建一个流，只能请求对端注册过的流类型
 message Header {
@@ -106,17 +132,13 @@ message Header {
     map<string, Accept> register = 3;
     //信息（可空）
     bytes info = 4;
-    //信息类型（可空），例："client.NewTxRequest"
-    string info_type = 5;
-    //信息序列化器（可空），例："json","cbor","binary"
-    string info_serializer = 6;
-    //流数据的类型（可空），例："client.SQLRequest"
-    string data_type = 7;
-    //流数据的序列化器（可空），例："json","cbor","binary"
-    string data_serializer = 8;
+//    //信息序列化器（可空）
+//    Serializer info_serializer = 5;
+//    //流消息中的数据的序列化器（可空）
+//    Serializer data_serializer = 6;
 }
 
-//流消息
+//消息
 message Message {
     //数据
     bytes data = 1;
@@ -134,4 +156,15 @@ message Error {
     string type = 1;
     //错误的信息（可空）
     string message = 2;
+}
+
+//关闭流
+message Close {
+    //结果（可空）
+    oneof result {
+        //错误，表示流返回错误的结果
+        Error error = 1;
+        //消息，表示流返回成功的结果
+        Message message = 2;
+    }
 }

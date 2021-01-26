@@ -2,10 +2,12 @@ package com.github.xy02.xtp
 
 import com.github.xy02.rx.getSubValues
 import com.google.protobuf.ByteString
+import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Observer
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.Disposable
+import io.reactivex.rxjava3.subjects.AsyncSubject
 import io.reactivex.rxjava3.subjects.PublishSubject
 import net.i2p.crypto.eddsa.EdDSAEngine
 import net.i2p.crypto.eddsa.EdDSAPrivateKey
@@ -38,12 +40,14 @@ data class Channel(
     val onAvailable: Observable<Boolean>,
     val dataSender: Observer<ByteArray>,
     val getStreamsByType: (String) -> Observable<Stream>,
+    val onResult: Maybe<ByteArray>,
 )
 
 data class Stream(
     val header: Header,
     val onData: Observable<ByteArray>,
     val dataPuller: Observer<Int>,
+    val closeWithData: (ByteArray) -> Unit,
     val createChannel: (header: Header.Builder) -> Channel,
     val pipeChannels: (PipeConfig) -> UnPipe,
 )
@@ -87,7 +91,7 @@ internal data class WindowState(
 internal data class Context(
     val newStreamId: () -> Int,
     val sendFrame: (Frame) -> Unit,
-    val getErrorFramesByStreamId: (Int) -> Observable<Frame>,
+    val getCloseFramesByStreamId: (Int) -> Observable<Frame>,
     val getPullFramesByStreamId: (Int) -> Observable<Frame>,
     val getHeaderFramesByParentStreamId: (Int) -> Observable<Frame>,
     val getEndFramesByStreamId: (Int) -> Observable<Frame>,
@@ -116,12 +120,12 @@ fun initWith(onMyInfo: Single<Info>, options: InitOptions = InitOptions()): (Soc
             val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
             val endFrames = getFramesByType(Frame.TypeCase.END)
             val pullFrames = getFramesByType(Frame.TypeCase.PULL)
-            val errorFrames = getFramesByType(Frame.TypeCase.ERROR)
+            val closeFrames = getFramesByType(Frame.TypeCase.CLOSE)
             val sid = AtomicInteger()
             val ctx = Context(
                 newStreamId = { sid.getAndIncrement() },
                 sendFrame = { frame: Frame -> socket.bytesSender.onNext(frame.toByteArray()) },
-                getErrorFramesByStreamId = getSubValues(errorFrames, Frame::getStreamId),
+                getCloseFramesByStreamId = getSubValues(closeFrames, Frame::getStreamId),
                 getPullFramesByStreamId = getSubValues(pullFrames, Frame::getStreamId),
                 getHeaderFramesByParentStreamId = getSubValues(headerFrames) { frame -> frame.header.parentStreamId },
                 getMessageFramesByStreamId = getSubValues(messageFrames, Frame::getStreamId),
@@ -216,19 +220,24 @@ internal fun createChildChannel(
             onAvailable = Observable.error(e),
             dataSender = dataSender,
             getStreamsByType = { Observable.error(e) },
+            onResult = Maybe.error(e),
         )
     } else {
         val streamId = ctx.newStreamId()
         val messageSender = PublishSubject.create<Message>()
-        val remoteError = ctx.getErrorFramesByStreamId(streamId)
+        val remoteClose = ctx.getCloseFramesByStreamId(streamId)
             .take(1)
             .doOnNext { frame ->
-                val e = frame.error
-                throw RemoteError(e.type, e.message)
+                if (frame.close.hasError()) {
+                    val e = frame.close.error
+                    throw RemoteError(e.type, e.message)
+                }
             }
-            .share()
+        val onResult = remoteClose.filter { frame -> frame.close.hasMessage() }
+            .map { frame -> frame.close.message.data.toByteArray() }
+            .singleElement().cache()
         val sentItemsWithNoError = messageSender
-            .takeUntil(remoteError)
+            .takeUntil(onResult.toObservable())
             .doOnNext { message ->
                 val frame = Frame.newBuilder().setStreamId(streamId).setMessage(message)
                 ctx.sendFrame(frame.build())
@@ -248,7 +257,6 @@ internal fun createChildChannel(
         val theEnd = sentItemsWithNoError.ignoreElements().toObservable<Message>()
         val pulls = ctx.getPullFramesByStreamId(streamId)
             .map { it.pull }
-            .takeUntil(remoteError)
             .takeUntil(theEnd)
             .replay(1)
             .autoConnect()
@@ -305,6 +313,7 @@ internal fun createChildChannel(
             onAvailable = isAvailable,
             dataSender = dataSender,
             getStreamsByType = getStreamsByType,
+            onResult = onResult,
         )
     }
 }
@@ -343,7 +352,14 @@ internal fun createStream(
             if (frame.end.hasError()) Observable.error(Exception("cancel"))
             else Observable.just(frame)
         }
+    val resultSubject = AsyncSubject.create<Close>()
     val dataPuller = PublishSubject.create<Int>()
+    val sendDataResult = { data: ByteArray ->
+        val message = Message.newBuilder().setData(ByteString.copyFrom(data))
+        val close = Close.newBuilder().setMessage(message)
+        resultSubject.onNext(close.build())
+        dataPuller.onComplete()
+    }
     val messages = ctx.getMessageFramesByStreamId(streamId)
         .map { frame -> frame.message }
         .takeUntil(theEnd)
@@ -354,16 +370,17 @@ internal fun createStream(
     )
     val pullFrames = pullIncrements
         .map { pull -> Frame.newBuilder().setPull(pull) }
+        .doOnComplete { resultSubject.onComplete() }
+        //缺少功能：等待所有子流生命周期结束后才能发送close
         .concatWith(
-            Observable.just(
-                Frame.newBuilder().setError(Error.newBuilder().setType("Cancel"))
-            )
+            resultSubject.single(Close.getDefaultInstance())
+                .map { close -> Frame.newBuilder().setClose(close) }
         )
         .onErrorReturn { err ->
             val errType = err.javaClass.simpleName
             val message = err.message ?: ""
-            Frame.newBuilder()
-                .setError(Error.newBuilder().setType(errType).setMessage(message))
+            val close = Close.newBuilder().setError(Error.newBuilder().setType(errType).setMessage(message))
+            Frame.newBuilder().setClose(close)
         }
         .map { builder -> builder.setStreamId(streamId).build() }
         .doOnNext { ctx.sendFrame(it) }
@@ -373,6 +390,7 @@ internal fun createStream(
         header = header,
         onData = onData,
         dataPuller = dataPuller,
+        closeWithData = sendDataResult,
         createChannel = createChildChannel(ctx, streamId, header.registerMap),
         pipeChannels = pipeChannels(onData, dataPuller),
     )
