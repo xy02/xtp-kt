@@ -2,14 +2,14 @@ plugins {
     id 'org.jetbrains.kotlin.jvm' version '1.4.21'
     id "com.google.protobuf" version "0.8.14"
     id 'idea'
-    id 'application'
+//    id 'application'
 }
 
 group 'me.xy02'
 version '0.1.0'
-application {
-    mainClassName ="com.github.xy02.example.ClientKt"
-}
+//application {
+//    mainClassName ="com.github.xy02.example.ClientKt"
+//}
 
 repositories {
     mavenCentral()
