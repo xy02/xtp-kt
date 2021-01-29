@@ -5,7 +5,7 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.1
+    协议版本：0.2
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
@@ -64,43 +64,20 @@ message Frame {
         //关闭流，表示消费者期望关闭流，stream_id为0时表示关闭连接
         //所以子流生命周期结束后才能发送此close
         Close close = 7;
+        //存活通知
+        Ping ping = 8;
     }
 }
 
+//存活通知
+message Ping {}
+
 //端信息
 message Info {
-    //应用证明（可空）
-    AppCert app_cert = 1;
-    //注册，键为流类型名stream_type，表示发送端注册此流类型
-    map<string, Accept> register = 2;
-}
-
-//应用证明
-message AppCert {
-    //应用信息的二进制
-    bytes app_info = 1;
-    //应用信息的签名
-    bytes app_sign = 2;
-    //签名算法
-    SignAlg sign_alg = 3;
-}
-
-//应用信息
-message AppInfo {
-    //创建时刻（毫秒）
-    int64 created_at = 1;
-    //应用名
-    string name = 2;
-    //版本（可空）
-    string version = 3;
-    //版本号（可空）
-    int32 version_code = 4;
-}
-
-//签名算法
-enum SignAlg {
-    //Edwards-Curve Digital Signature Algorithm (EdDSA), https://tools.ietf.org/html/rfc8032
-    Ed25519 = 0;
+    //注册（可空），键为流类型名stream_type，表示发送端注册此流类型
+    map<string, Accept> register = 1;
+    //消息（可空）
+    Message message = 2;
 }
 
 //流的接受条件，表示发送端接受的流类型
@@ -130,8 +107,8 @@ message Header {
     int32 parent_stream_id = 2;
     //注册（可空），键为流类型名stream_type，表示发送端在此流上注册可接受的流类型，流结束时就不再接受
     map<string, Accept> register = 3;
-    //信息（可空）
-    bytes info = 4;
+    //消息（可空）
+    Message message = 4;
 //    //信息序列化器（可空）
 //    Serializer info_serializer = 5;
 //    //流消息中的数据的序列化器（可空）
@@ -142,6 +119,8 @@ message Header {
 message Message {
     //数据
     bytes data = 1;
+    //数据类型（可空）
+    string data_type = 2;
 }
 
 //流结束
@@ -154,8 +133,8 @@ message End {
 message Error {
     //错误类型
     string type = 1;
-    //错误的信息（可空）
-    string message = 2;
+    //错误的描述（可空）
+    string description = 2;
 }
 
 //关闭流

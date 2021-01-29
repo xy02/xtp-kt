@@ -91,9 +91,9 @@ fun nioSocketsSource(): SocketsSource {
                         val att = key.attachment() as SocketChannelAttachment
 //                        println("sc: ${sc}, att:${att}")
                         var loop = true
-                        do {
+                        while (loop) {
                             loop = readSocketChannel(sc, att)
-                        } while (loop)
+                        }
                     }
                 }
             }

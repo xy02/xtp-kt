@@ -1,24 +1,24 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.Stream
+import com.github.xy02.xtp.initWith
+import com.github.xy02.xtp.nioClientSocket
 import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
-import xtp.AppInfo
 import xtp.Header
 import xtp.Info
 import java.net.InetSocketAddress
-import java.util.*
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val priKeySeed = Base64.getDecoder().decode("lWOsghdX5IMTXq22Z8Lbl0MoMwCJrBSE0OzstHaWbJ0=")
-    val appInfo = AppInfo.newBuilder().setName("someApp").build()
-    val singleAppCert = makeAppCertWithEd25519(appInfo, priKeySeed)
-    val singleMyInfo = singleAppCert.map { Info.newBuilder().setAppCert(it).build() }
+    val singleMyInfo = Single.just(Info.getDefaultInstance())
     val init = initWith(singleMyInfo)
     val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
     theSocket
+        .subscribeOn(Schedulers.newThread())
         .flatMapSingle { socket ->
             println("onSocket")
             init(socket)
@@ -29,8 +29,6 @@ fun main(args: Array<String>) {
                 Observable.timer(3, TimeUnit.SECONDS)
             }
         }
-        .subscribeOn(Schedulers.newThread())
-        .doOnComplete { println("conn onComplete") }
         .subscribe(
             { conn ->
                 println("onConnection")
@@ -38,7 +36,7 @@ fun main(args: Array<String>) {
             },
             { err -> err.printStackTrace() },
         )
-    Thread.sleep(1000000000)
+    readLine()
 }
 
 private fun crazyAcc(conn: Connection) {

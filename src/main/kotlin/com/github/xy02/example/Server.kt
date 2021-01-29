@@ -1,6 +1,9 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.PipeConfig
+import com.github.xy02.xtp.initWith
+import com.github.xy02.xtp.nioServerSockets
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import io.reactivex.rxjava3.schedulers.Schedulers
@@ -8,21 +11,14 @@ import xtp.Accept
 import xtp.Header
 import xtp.Info
 import java.text.SimpleDateFormat
-import java.util.*
 
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
-    val pubKey = Base64.getDecoder().decode("zxj0S8mMIE0QDeJqOMPSll0LJBZr0bnn7fdw+/fpuRY=")
     val sockets = nioServerSockets()
     val myInfo = Info.newBuilder()
         .putRegister("Acc", Accept.newBuilder().setMaxConcurrentStream(10).build())
         .build()
-    val init = initWith(
-        Single.just(myInfo), InitOptions(
-            denyAnonymousApp = false,
-            appPublicKeyMap = mapOf("someApp" to pubKey)
-        )
-    )
+    val init = initWith(Single.just(myInfo))
     sockets.flatMapMaybe { socket ->
         println("onSocket")
         init(socket)
@@ -36,7 +32,7 @@ fun main(args: Array<String>) {
             },
             { err -> err.printStackTrace() },
         )
-    Thread.sleep(1000000000)
+    readLine()
 }
 
 //累加收到的数据个数
