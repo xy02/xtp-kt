@@ -1,24 +1,22 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.PipeConfig
-import com.github.xy02.xtp.initWith
-import com.github.xy02.xtp.nioServerSockets
+import com.github.xy02.xtp.*
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Accept
 import xtp.Header
-import xtp.Info
+import xtp.PeerInfo
 import java.text.SimpleDateFormat
 
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     val sockets = nioServerSockets()
-    val myInfo = Info.newBuilder()
-        .putRegister("Acc", Accept.newBuilder().setMaxConcurrentStream(10).build())
-        .build()
-    val init = initWith(Single.just(myInfo))
+    val infoHeader = InfoHeader(
+        peerInfo = PeerInfo.getDefaultInstance(),
+        register = mapOf("Acc" to Accept.getDefaultInstance())
+    )
+    val init = initWith(Single.just(infoHeader))
     sockets.flatMapMaybe { socket ->
         println("onSocket")
         init(socket)
@@ -37,13 +35,13 @@ fun main(args: Array<String>) {
 
 //累加收到的数据个数
 private fun acc(conn: Connection) {
-    val onStream = conn.getStreamsByType("Acc")
+    val onStream = conn.getStreamByType("Acc")
     onStream.onErrorComplete().subscribe { stream ->
         //验证请求
-        println("onHeader:${stream.header}")
+        println("onHeader:${stream.header}\n")
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
         //处理上游发来的数据（未向上游拉取数据时是不会收到数据的）
-        val handledData = stream.onData
+        val handledData = stream.onMessage
             .scan(0) { acc, _ -> acc + 1 }
             .map { acc ->
                 val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
@@ -57,7 +55,7 @@ private fun acc(conn: Connection) {
 //                bb.array()
             }
         //创建下游流（会发送header）
-        val accReplyChannel = stream.createChannel(Header.newBuilder().setStreamType("AccReply"))
+        val accReplyChannel = stream.createChannel(Header.newBuilder().setStreamName("AccReply"))
         //流量控制
         stream.pipeChannels(
             PipeConfig(

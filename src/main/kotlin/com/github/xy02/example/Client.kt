@@ -1,21 +1,25 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.Stream
-import com.github.xy02.xtp.initWith
-import com.github.xy02.xtp.nioClientSocket
+import com.github.xy02.xtp.*
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.schedulers.Schedulers
+import io.reactivex.rxjava3.subjects.BehaviorSubject
 import xtp.Accept
 import xtp.Header
-import xtp.Info
+import xtp.PeerInfo
 import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val singleMyInfo = Single.just(Info.getDefaultInstance())
-    val init = initWith(singleMyInfo)
+    val s = BehaviorSubject.create<Int>()
+    s.onNext(1)
+    s.onComplete()
+    s.subscribe { println("s:$it") }
+    val infoHeader = InfoHeader(
+        peerInfo = PeerInfo.getDefaultInstance(),
+    )
+    val init = initWith(Single.just(infoHeader))
     val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
     theSocket
         .subscribeOn(Schedulers.newThread())
@@ -43,10 +47,10 @@ private fun crazyAcc(conn: Connection) {
     val reply = "AccReply"
     val channel = conn.createChannel(
         Header.newBuilder()
-            .setStreamType("Acc")
-            .putRegister(reply, Accept.newBuilder().setMaxConcurrentStream(10).build())
+            .setStreamName("Acc")
+            .putRegister(reply, Accept.getDefaultInstance())
     )
-    crazyAccReply(channel.getStreamsByType(reply))
+    crazyAccReply(channel.getStreamByType(reply))
     Observable.timer(1, TimeUnit.SECONDS)
         .flatMap {
             channel.onPull.flatMap { pull ->
@@ -55,10 +59,10 @@ private fun crazyAcc(conn: Connection) {
                     .repeat(pull.toLong())
             }
         }
-        .subscribe(channel.dataSender)
+        .subscribe(channel.messageSender)
 }
 
-private fun crazyAccReply(onStream: Observable<Stream>) {
+private fun crazyAccReply(onStream: Single<Stream>) {
     onStream.subscribe { (header, bufs, bufPuller) ->
         var count = 0
         val d = Observable.interval(1, TimeUnit.SECONDS)
@@ -71,7 +75,7 @@ private fun crazyAccReply(onStream: Observable<Stream>) {
 //            val begin = System.currentTimeMillis()
 
         //验证请求
-        println("onHeader:${header.streamType}")
+        println("onHeader:${header}\n")
         val pulls = bufs
 //                .doOnNext { println("buf") }
             .map { 1 }
