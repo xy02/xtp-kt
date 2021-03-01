@@ -19,7 +19,7 @@ fun main(args: Array<String>) {
     val infoHeader = InfoHeader(
         peerInfo = PeerInfo.getDefaultInstance(),
     )
-    val init = initWith(Single.just(infoHeader))
+    val init = initWith(infoHeader)
     val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
     theSocket
         .subscribeOn(Schedulers.newThread())
@@ -44,10 +44,10 @@ fun main(args: Array<String>) {
 }
 
 private fun crazyAcc(conn: Connection) {
-    val reply = "AccReply"
+    val reply = "accReply"
     val channel = conn.createChannel(
         Header.newBuilder()
-            .setStreamName("Acc")
+            .setHandlerName("acc")
             .putRegister(reply, Accept.getDefaultInstance())
     )
     crazyAccReply(channel.getStreamByType(reply))

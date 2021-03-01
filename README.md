@@ -1,27 +1,46 @@
-package com.github.xy02.example
+# xtp-kt
 
-import com.github.xy02.xtp.*
-import io.reactivex.rxjava3.plugins.RxJavaPlugins
-import io.reactivex.rxjava3.schedulers.Schedulers
-import xtp.Accept
-import xtp.Header
-import xtp.PeerInfo
-import java.text.SimpleDateFormat
+### 介绍
+XTP协议的Kotlin实现（XTP是个极简的应用层通讯协议，详见[xtp.proto](src/main/proto/xtp.proto)）
 
+### 特性
+- 支持任意有序传输协议，TCP, WebSocket, QUIC等
+- 支持背压的多路流
+- 超高性能
+- 易于构建微服务
+
+### 安装教程
+gradle:
+```groovy
+repositories {
+    //...
+    maven { url 'https://jitpack.io' }
+}
+dependencies {
+    implementation "io.reactivex.rxjava3:rxjava:3.0.8"
+    implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
+    implementation 'com.gitee.xy02:xtp-kt:0.3.1'
+}
+```
+
+### 使用说明
+服务端：
+```kotlin
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建初始化函数
     val init = initWith(InfoHeader(
+        //可包含自身身份证明等信息
         peerInfo = PeerInfo.getDefaultInstance(),
+        //注册可接收的handlerName
         register = mapOf("acc" to Accept.getDefaultInstance())
     ))
     //创建TCP客户端Socket
     //nioClientSocket(InetSocketAddress("localhost", 8001))
     //创建TCP服务端Sockets
     nioServerSockets()
-        .subscribeOn(Schedulers.newThread())
+        .subscribeOn(Schedulers.newThread())//如果是安卓，需另起线程
         .flatMapMaybe { socket ->
-            println("onSocket")
             //转换Socket->Connection
             init(socket)
                 .doOnError { err -> println("init err:$err") }
@@ -29,7 +48,6 @@ fun main(args: Array<String>) {
         }
         .subscribe(
             { conn ->
-                println("onConnection")
                 //业务函数
                 acc(conn)
             },
@@ -38,12 +56,13 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-//累加收到的数据个数
+//累加收到的数据个数，并向下游流输出json字符串
+// {"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(conn: Connection) {
     //获取消息流
     val onStream = conn.getStreamByType("acc")
     onStream.onErrorComplete().subscribe { stream ->
-        //验证请求
+        //验证请求，处理header.data等
         println("onHeader:${stream.header}\n")
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
         //处理上游发来的数据（未向上游拉取数据时是不会收到数据的）
@@ -52,13 +71,6 @@ private fun acc(conn: Connection) {
             .map { acc ->
                 val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
                 json.toByteArray()
-//                val json = io.vertx.core.json.JsonObject()
-//                    .put("time", df.format(System.currentTimeMillis()))
-//                    .put("acc", acc)
-//                json.toBuffer().bytes
-//                val bb = java.nio.ByteBuffer.allocate(4)
-//                bb.putInt(acc)
-//                bb.array()
             }
         //创建下游流（会发送header）
         val accReplyChannel = stream.createChannel(Header.newBuilder().setHandlerName("accReply"))
@@ -68,9 +80,6 @@ private fun acc(conn: Connection) {
                 mapOf(accReplyChannel to handledData)
             )
         )
-//        //向下游输出处理过的数据
-//        handledData.subscribe(accReplyChannel.dataSender)
-//        //让拉取上游数据的速度与下游流的拉取速度相同
-//        accReplyChannel.onPull.subscribe(stream.dataPuller)
     }
 }
+```

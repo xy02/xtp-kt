@@ -45,6 +45,7 @@ data class Stream(
     val messagePuller: Observer<Int>,
     val createChannel: (header: Header.Builder) -> Channel,
     val pipeChannels: (PipeConfig) -> UnPipe,
+    val getHeaderStream: ()-> Observable<Stream>,
 )
 
 data class PipeConfig(
@@ -84,6 +85,11 @@ internal data class Context(
     val getMessageFramesByStreamId: (Int) -> Observable<Frame>,
 )
 
+fun initWith(myInfo: InfoHeader): (Socket) -> Single<Connection> {
+    return initWith(Single.just(myInfo))
+}
+
+//用于socket初始化的函数
 fun initWith(onMyInfo: Single<InfoHeader>): (Socket) -> Single<Connection> {
     val initialSid = 1
     val singleMyInfoPair = onMyInfo.map { myInfo ->
@@ -160,16 +166,16 @@ internal fun getStream(
     downstreamHeaderFrames: Observable<Frame>,
 ): (String) -> Single<Stream> {
     val m = ConcurrentHashMap<String, Pair<BehaviorSubject<Frame>, Accept>>()
-    val headerMap = register.mapValues { (streamName, accept) ->
+    val headerMap = register.mapValues { (handlerName, accept) ->
         val subject = BehaviorSubject.create<Frame>()
-        m[streamName] = Pair(subject, accept)
+        m[handlerName] = Pair(subject, accept)
         subject
     }
     downstreamHeaderFrames
         .doOnNext { frame ->
-            val streamName = frame.header.streamName
-            val (emitter, accept) = m[streamName] ?: throw ProtocolError("not acceptable stream type")
-            m.remove(streamName)
+            val handlerName = frame.header.handlerName
+            val (emitter, accept) = m[handlerName] ?: throw ProtocolError("not acceptable stream type")
+            m.remove(handlerName)
             emitter.onNext(frame)
 //            emitter.onComplete()
         }
@@ -177,27 +183,26 @@ internal fun getStream(
         .subscribe(
             {},
             { e ->
-                m.forEach { (streamName, pair) ->
+                m.forEach { (handlerName, pair) ->
                     val (emitter, accept) = pair
-                    m.remove(streamName)
+                    m.remove(handlerName)
                     emitter.onError(e)
                 }
                 ctx.close(e)
             },
         )
-    return { streamName ->
-        val headerFrames = headerMap[streamName]?.take(1)?.singleOrError()
+    return { handlerName ->
+        val headerFrames = headerMap[handlerName]?.take(1)?.singleOrError()
             ?: Single.error(ProtocolError("not acceptable stream type"))
-        headerFrames.map { headerFrame -> createStream(ctx, headerFrame) }
+        headerFrames.map { headerFrame -> createStream(ctx, headerFrame.header) }
     }
 }
 
 internal fun createStream(
     ctx: Context,
-    headerFrame: Frame
+    header: Header
 ): Stream {
-    val streamId = headerFrame.header.streamId
-    val header = headerFrame.header
+    val streamId = header.streamId
     val theEnd = ctx.getEndFramesByStreamId(streamId)
         .take(1)
         .doOnNext { frame ->
@@ -233,7 +238,18 @@ internal fun createStream(
         messagePuller = dataPuller,
         createChannel = createDownstreamChannel(ctx, streamId, header.registerMap),
         pipeChannels = pipeChannels(onMessage, dataPuller),
+        getHeaderStream = parseHeaderStream(ctx, onMessage)
     )
+}
+
+//解析消息为“流头”的流
+internal fun parseHeaderStream(ctx: Context, onMessage: Observable<ByteArray>):()->Observable<Stream>{
+    val streams = onMessage.map(Header::parseFrom)
+        .map { header -> createStream(ctx, header) }
+        .share()
+    return {
+        streams
+    }
 }
 
 internal fun createDownstreamChannel(
@@ -244,7 +260,7 @@ internal fun createDownstreamChannel(
 ): (header: Header.Builder) -> Channel = { header ->
     val dataSender = PublishSubject.create<ByteArray>()
     //缺少验证accept
-    if (!remoteRegister.containsKey(header.streamName)) {
+    if (!remoteRegister.containsKey(header.handlerName)) {
         val e = ProtocolError("the stream type is not accepted")
         Channel(
             onPull = Observable.error(e),
