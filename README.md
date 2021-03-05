@@ -19,7 +19,8 @@ repositories {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.0.8"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
-    implementation 'com.gitee.xy02:xtp-kt:0.3.1'
+    implementation 'com.gitee.xy02:xtp-kt:0.4.0'
+    //implementation 'com.github.xy02:xtp-kt:0.4.0'
 }
 ```
 
@@ -62,7 +63,7 @@ private fun acc(conn: Connection) {
     //获取消息流
     val onStream = conn.getStreamByType("acc")
     onStream.onErrorComplete().subscribe { stream ->
-        //验证请求，处理header.data等
+        //验证请求，处理header.info等
         println("onHeader:${stream.header}\n")
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
         //处理上游发来的数据（未向上游拉取数据时是不会收到数据的）
@@ -73,12 +74,13 @@ private fun acc(conn: Connection) {
                 json.toByteArray()
             }
         //创建下游流（会发送header）
-        val accReplyChannel = stream.createChannel(Header.newBuilder().setHandlerName("accReply"))
+        val accReplyChannel = stream.createChannel(
+            Header.newBuilder().setHandlerName("accReply")
+        )
         //向下游输出，自动流量控制
         stream.pipeChannels(
-            PipeConfig(
-                mapOf(accReplyChannel to handledData)
-            )
+            //可以有多个下游管道
+            mapOf(accReplyChannel to handledData.map { HandledMessage(it) })
         )
     }
 }

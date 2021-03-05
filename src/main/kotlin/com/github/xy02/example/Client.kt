@@ -45,21 +45,22 @@ fun main(args: Array<String>) {
 
 private fun crazyAcc(conn: Connection) {
     val reply = "accReply"
-    val channel = conn.createChannel(
+    conn.createChannel(
         Header.newBuilder()
             .setHandlerName("acc")
             .putRegister(reply, Accept.getDefaultInstance())
-    )
-    crazyAccReply(channel.getStreamByType(reply))
-    Observable.timer(1, TimeUnit.SECONDS)
-        .flatMap {
-            channel.onPull.flatMap { pull ->
+    ).subscribe { channel ->
+        crazyAccReply(channel.getStreamByType(reply))
+        Observable.timer(1, TimeUnit.SECONDS)
+            .flatMap {
+                channel.onPull.flatMap { pull ->
 //                        println("the pull is $pull")
-                Observable.just(ByteArray(1))
-                    .repeat(pull.toLong())
+                    Observable.just(ByteArray(1))
+                        .repeat(pull.toLong())
+                }
             }
-        }
-        .subscribe(channel.messageSender)
+            .subscribe(channel.messageSender)
+    }
 }
 
 private fun crazyAccReply(onStream: Single<Stream>) {

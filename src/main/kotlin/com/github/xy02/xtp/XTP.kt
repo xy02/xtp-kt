@@ -11,7 +11,6 @@ import io.reactivex.rxjava3.subjects.PublishSubject
 import xtp.*
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 data class Socket(
@@ -28,7 +27,7 @@ data class Connection(
     val remoteInfo: InfoHeader,
     val getStreamByType: (String) -> Single<Stream>,
     //创建流
-    val createChannel: (header: Header.Builder) -> Channel,
+    val createChannel: (header: Header.Builder) -> Single<Channel>,
     val close: (Throwable) -> Unit,
 )
 
@@ -37,21 +36,18 @@ data class Channel(
     val onAvailable: Observable<Boolean>,
     val messageSender: Observer<ByteArray>,
     val getStreamByType: (String) -> Single<Stream>,
+    val createChildChannel: (header: Header.Builder) -> Single<Channel>,
 )
 
 data class Stream(
     val header: Header,
     val onMessage: Observable<ByteArray>,
     val messagePuller: Observer<Int>,
-    val createChannel: (header: Header.Builder) -> Channel,
-    val pipeChannels: (PipeConfig) -> UnPipe,
-    val getHeaderStream: ()-> Observable<Stream>,
+    val createChannel: (header: Header.Builder) -> Single<Channel>,
+    val pipeChannels: (PipeMap) -> UnPipe,
+    val getHeaderStream: () -> Observable<Stream>,
 )
-
-data class PipeConfig(
-    val channelMap: Map<Channel, Observable<ByteArray>>,
-    val pullIncrement: Int = 10000,
-)
+typealias PipeMap = Map<Single<Channel>, Observable<HandledMessage>>
 
 data class UnPipeError(
     override val message: String = "",
@@ -66,7 +62,13 @@ data class ProtocolError(
     override val message: String = "",
 ) : Throwable()
 
+class HandledMessage(
+    val message: ByteArray,
+    val ignore: Boolean = false,
+)
+
 typealias UnPipe = () -> Unit
+
 
 internal data class WindowState(
     val windowSize: Int,
@@ -237,13 +239,13 @@ internal fun createStream(
         onMessage = onMessage,
         messagePuller = dataPuller,
         createChannel = createDownstreamChannel(ctx, streamId, header.registerMap),
-        pipeChannels = pipeChannels(onMessage, dataPuller),
+        pipeChannels = pipeChannels(dataPuller),
         getHeaderStream = parseHeaderStream(ctx, onMessage)
     )
 }
 
 //解析消息为“流头”的流
-internal fun parseHeaderStream(ctx: Context, onMessage: Observable<ByteArray>):()->Observable<Stream>{
+internal fun parseHeaderStream(ctx: Context, onMessage: Observable<ByteArray>): () -> Observable<Stream> {
     val streams = onMessage.map(Header::parseFrom)
         .map { header -> createStream(ctx, header) }
         .share()
@@ -256,19 +258,24 @@ internal fun createDownstreamChannel(
     ctx: Context,
     upstreamId: Int,
     remoteRegister: Map<String, Accept>,
-    queueSize: Int = 1000,
-): (header: Header.Builder) -> Channel = { header ->
-    val dataSender = PublishSubject.create<ByteArray>()
-    //缺少验证accept
-    if (!remoteRegister.containsKey(header.handlerName)) {
-        val e = ProtocolError("the stream type is not accepted")
-        Channel(
-            onPull = Observable.error(e),
-            onAvailable = Observable.error(e),
-            messageSender = dataSender,
-            getStreamByType = { Single.error(e) },
-        )
-    } else {
+): (header: Header.Builder) -> Single<Channel> {
+    val newChannel = createChannel(ctx, 0, upstreamId)
+    return { header ->
+        if (!remoteRegister.containsKey(header.handlerName)) {
+            //缺少验证accept
+            Single.error(ProtocolError("the handlerName is not accepted"))
+        } else {
+            newChannel(header)
+        }
+    }
+}
+
+internal fun createChannel(
+    ctx: Context,
+    parentStreamId: Int,
+    upstreamId: Int,
+): (header: Header.Builder) -> Single<Channel> = { header ->
+    Single.create<Channel> { emitter ->
         val streamId = ctx.newStreamId()
         val availableDataSender = PublishSubject.create<ByteArray>()
         val remoteCancel = ctx.getCancelFramesByStreamId(streamId)
@@ -301,98 +308,92 @@ internal fun createDownstreamChannel(
             .takeUntil(theEnd)
             .replay(1)
             .autoConnect()
-        val sumOfSendAndPull = Observable.merge(sentItemsWithNoError.map { -1 }, pulls)
+        val availableAmount = Observable.merge(sentItemsWithNoError.map { -1 }, pulls)
             .scan(0, { a, b -> a + b })
-        val isAvailable = sumOfSendAndPull.map { amount -> amount > 0 }
+        val isAvailable = availableAmount.map { amount -> amount > 0 }
             .distinctUntilChanged()
             .replay(1)
             .autoConnect()
-        val queue = ConcurrentLinkedQueue<ByteArray>()
-        val dataFromQueue = pulls
-            .flatMap { pull ->
-                Observable
-                    .generate<ByteArray> { emitter ->
-                        val v = queue.poll()
-                        if (v != null) emitter.onNext(v)
-                        else emitter.onComplete()
-                    }
-                    .take(pull.toLong())
-            }
-        //side effect
-        Observable.merge(
-            dataFromQueue,
-            dataSender.withLatestFrom(isAvailable,
-                { data, ok ->
-                    if (ok) Observable.just(data)
-                    else Observable.empty<ByteArray>().doOnComplete {
-                        if (queueSize > 0) {
-                            if (queue.size == queueSize)
-                                queue.poll()
-                            queue.add(data)
-                        }
-                    }
-                })
-                .flatMap { it }
+        val messageSender = PublishSubject.create<ByteArray>()
+        val downstreamHeaderFrames = ctx.getHeaderFramesByUpstreamId(streamId)
+        val getStreamByType = getStream(ctx, header.registerMap, downstreamHeaderFrames)
+        val channel = Channel(
+            onPull = pulls,
+            onAvailable = isAvailable,
+            messageSender = messageSender,
+            getStreamByType = getStreamByType,
+            createChildChannel = createChannel(ctx, streamId, 0)
         )
-            .doOnSubscribe {
-                //send header，frame的stream_id是0
-                val frame = Frame.newBuilder()
-                    .setHeader(header.setStreamId(streamId).setUpstreamId(upstreamId))
-                ctx.sendFrame(frame.build())
-            }
+        emitter.onSuccess(channel)
+        //side effect
+        messageSender.withLatestFrom(isAvailable,
+            { data, ok ->
+                //不可发送的消息直接丢弃
+                if (ok) availableDataSender.onNext(data)
+            })
             .subscribe(
-                { data -> availableDataSender.onNext(data) },
+                { },
                 availableDataSender::onError,
                 availableDataSender::onComplete
             )
-        val downstreamHeaderFrames = ctx.getHeaderFramesByUpstreamId(streamId)
-        val getStreamByType = getStream(ctx, header.registerMap, downstreamHeaderFrames)
-        Channel(
-            onPull = pulls,
-            onAvailable = isAvailable,
-            messageSender = dataSender,
-            getStreamByType = getStreamByType,
-        )
-    }
+        //发送header
+        val frame = Frame.newBuilder()
+            .setStreamId(parentStreamId)
+            .setHeader(header.setStreamId(streamId).setUpstreamId(upstreamId))
+        ctx.sendFrame(frame.build())
+    }.cache()
 }
 
 internal fun pipeChannels(
-    onData: Observable<ByteArray>,
-    dataPuller: Observer<Int>,
-): (PipeConfig) -> UnPipe {
-    return { (channelMap, pullIncrement) ->
-        val clearMap = channelMap.mapValues { (channel, outputData) ->
-            val dataSender = channel.messageSender
-            //向下游输出处理过的数据
-            val disposable = outputData.subscribe(dataSender::onNext, dataSender::onError, dataSender::onComplete)
-            return@mapValues {
-                disposable.dispose()
-                dataSender.onError(UnPipeError())
+    messagePuller: Observer<Int>,
+): (PipeMap) -> UnPipe {
+    return { channelMap ->
+        val list = channelMap.map { (singleChannel, handledMessages) ->
+            singleChannel.flatMapObservable { channel ->
+                val dataSender = channel.messageSender
+                val theEnd = channel.onPull.ignoreElements().toObservable<Int>()
+                Observable.merge(
+                    channel.onPull,
+                    handledMessages
+                        .takeUntil(theEnd)
+                        .doOnNext {
+                            //向下游输出处理过的数据
+                            if (!it.ignore) dataSender.onNext(it.message)
+                        }
+                        .doOnError(dataSender::onError)
+                        .doOnComplete(dataSender::onComplete)
+                        .filter { it.ignore }
+                        .map { 1 }
+                ).doOnComplete { throw Exception() }
+                    .onErrorReturnItem(-1)
+                    .map { pull -> Pair(singleChannel, pull) }
             }
         }
-        val availableList = channelMap.map { (channel, _) -> channel.onAvailable }
-        val onAllAvailable = Observable.combineLatest(availableList) {
-            it.fold(true, { pre, available -> pre && available as Boolean })
-        }
-        var pendingPull = pullIncrement
-        val d = onData.map { 1 }
-            .withLatestFrom(onAllAvailable.doOnNext { ok ->
-                if (ok) {
-                    val pull = pendingPull
-                    pendingPull = 0
-                    //向上游拉取
-                    dataPuller.onNext(pull)
+        val stateMap = channelMap.mapValues { 0 }.toMutableMap()
+        val d = Observable.fromIterable(list)
+            .flatMap { it }
+            .scan(stateMap, { state, (key, pull) ->
+                if (pull == -1) {
+                    state.remove(key)
+                    return@scan state
                 }
-            }, { pull, ok ->
-                if (ok) dataPuller.onNext(pull) else pendingPull += pull
+                state[key] = state[key]?.plus(pull) ?: 0
+                //找最小的pull，并向上游拉取
+                var minPull = Int.MAX_VALUE
+                state.forEach { (k, remain) ->
+                    if (remain < minPull)
+                        minPull = remain
+                }
+                if (minPull != 0) {
+                    messagePuller.onNext(minPull)
+                    state.mapValues { (k, v) -> v - minPull }.toMutableMap()
+                } else
+                    state
             })
-            .onErrorComplete()
             .subscribe()
         ;
         {
             d.dispose()
-            clearMap.forEach { (_, clear) -> clear() }
-            dataPuller.onError(UnPipeError())
         }
     }
 }

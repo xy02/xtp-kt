@@ -11,10 +11,12 @@ import java.text.SimpleDateFormat
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建初始化函数
-    val init = initWith(InfoHeader(
-        peerInfo = PeerInfo.getDefaultInstance(),
-        register = mapOf("acc" to Accept.getDefaultInstance())
-    ))
+    val init = initWith(
+        InfoHeader(
+            peerInfo = PeerInfo.getDefaultInstance(),
+            register = mapOf("acc" to Accept.getDefaultInstance())
+        )
+    )
     //创建TCP客户端Socket
     //nioClientSocket(InetSocketAddress("localhost", 8001))
     //创建TCP服务端Sockets
@@ -60,17 +62,18 @@ private fun acc(conn: Connection) {
 //                bb.putInt(acc)
 //                bb.array()
             }
-        //创建下游流（会发送header）
+        //创建下游流
         val accReplyChannel = stream.createChannel(Header.newBuilder().setHandlerName("accReply"))
         //向下游输出，自动流量控制
         stream.pipeChannels(
-            PipeConfig(
-                mapOf(accReplyChannel to handledData)
-            )
+            //可以有多个下游管道
+            mapOf(accReplyChannel to handledData.map { HandledMessage(it) })
         )
-//        //向下游输出处理过的数据
-//        handledData.subscribe(accReplyChannel.dataSender)
-//        //让拉取上游数据的速度与下游流的拉取速度相同
-//        accReplyChannel.onPull.subscribe(stream.dataPuller)
+//        accReplyChannel.subscribe {channel->
+//            //向下游输出处理过的数据
+//            handledData.subscribe(channel.messageSender)
+//            //让拉取上游数据的速度与下游流的拉取速度相同
+//            channel.onPull.subscribe(stream.messagePuller)
+//        }
     }
 }
