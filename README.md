@@ -36,7 +36,7 @@ fun main(args: Array<String>) {
     val init = initWith(InfoHeader(
         //可包含自身身份证明等信息
         peerInfo = PeerInfo.getDefaultInstance(),
-        //注册可接收的messageType
+        //注册可接收的infoType
         register = mapOf(typeAcc to Accept.getDefaultInstance())
     ))
     //创建TCP客户端Socket

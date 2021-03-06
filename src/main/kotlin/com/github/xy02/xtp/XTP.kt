@@ -23,7 +23,7 @@ data class Socket(
 data class InfoHeader(
     //端信息
     val peerInfo: PeerInfo,
-    //消息类型的注册，表示允许接收的下游流消息类型
+    //流信息类型的注册，表示允许接收的下游流信息类型
     val register: Map<String, Accept> = mapOf(),
 )
 
@@ -191,16 +191,16 @@ internal fun getStream(
     downstreamHeaderFrames: Observable<Frame>,
 ): (String) -> Single<Stream> {
     val m = ConcurrentHashMap<String, Pair<BehaviorSubject<Frame>, Accept>>()
-    val headerMap = register.mapValues { (messageType, accept) ->
+    val headerMap = register.mapValues { (infoType, accept) ->
         val subject = BehaviorSubject.create<Frame>()
-        m[messageType] = Pair(subject, accept)
+        m[infoType] = Pair(subject, accept)
         subject
     }
     downstreamHeaderFrames
         .doOnNext { frame ->
-            val messageType = frame.header.messageType
-            val (emitter, accept) = m[messageType] ?: throw ProtocolError("not acceptable stream type")
-            m.remove(messageType)
+            val infoType = frame.header.infoType
+            val (emitter, accept) = m[infoType] ?: throw ProtocolError("not acceptable stream type")
+            m.remove(infoType)
             emitter.onNext(frame)
 //            emitter.onComplete()
         }
@@ -208,16 +208,16 @@ internal fun getStream(
         .subscribe(
             {},
             { e ->
-                m.forEach { (messageType, pair) ->
+                m.forEach { (infoType, pair) ->
                     val (emitter, accept) = pair
-                    m.remove(messageType)
+                    m.remove(infoType)
                     emitter.onError(e)
                 }
                 ctx.close(e)
             },
         )
-    return { messageType ->
-        val headerFrames = headerMap[messageType]?.take(1)?.singleOrError()
+    return { infoType ->
+        val headerFrames = headerMap[infoType]?.take(1)?.singleOrError()
             ?: Single.error(ProtocolError("not acceptable stream type"))
         headerFrames.map { headerFrame -> createStream(ctx, headerFrame.header) }
     }
@@ -284,9 +284,9 @@ internal fun createDownstreamChannel(
 ): (header: Header.Builder) -> Single<Channel> {
     val newChannel = createChannel(ctx, 0, upstreamId)
     return { header ->
-        if (!remoteRegister.containsKey(header.messageType)) {
+        if (!remoteRegister.containsKey(header.infoType)) {
             //缺少验证accept
-            Single.error(ProtocolError("the messageType is not accepted"))
+            Single.error(ProtocolError("the infoType is not accepted"))
         } else {
             newChannel(header)
         }

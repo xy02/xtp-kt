@@ -43,7 +43,7 @@ fun main(args: Array<String>) {
 private fun crazyAcc(conn: Connection) {
     conn.createChannel(
         Header.newBuilder()
-            .setMessageType(typeAcc)
+            .setInfoType(typeAcc)
             .putRegister(typeAccReply, Accept.getDefaultInstance())
     ).subscribe { channel ->
         crazyAccReply(channel.getStreamByType(typeAccReply))
