@@ -13,45 +13,63 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+//Socket，可表示任意有序的基础传输协议的Socket，TCP, WebSocket, QUIC等
 data class Socket(
     val onBytes: Observable<ByteArray>,
     val bytesSender: Observer<ByteArray>,
 )
 
+//信息头，用于连接首次发送流头
 data class InfoHeader(
+    //端信息
     val peerInfo: PeerInfo,
+    //消息类型的注册，表示允许接收的下游流消息类型
     val register: Map<String, Accept> = mapOf(),
 )
 
+//连接，使用initWith可以把Socket类型转换为Connection
 data class Connection(
+    //对端信息
     val remoteInfo: InfoHeader,
+    //获取对端发来的下游流
     val getStreamByType: (String) -> Single<Stream>,
-    //创建流
+    //创建下游流的发送通道，订阅后会发送“流头”消息
     val createChannel: (header: Header.Builder) -> Single<Channel>,
+    //关闭连接
     val close: (Throwable) -> Unit,
 )
 
+//流的发送通道
 data class Channel(
+    //流消费者拉取消息的增量
     val onPull: Observable<Int>,
+    //是否可发送流消息
     val onAvailable: Observable<Boolean>,
+    //流消息的发送器
     val messageSender: Observer<ByteArray>,
+    //获取对端发来的下游流
     val getStreamByType: (String) -> Single<Stream>,
+    //创建“子流”的发送通道，订阅后会发送“流头”消息
     val createChildChannel: (header: Header.Builder) -> Single<Channel>,
 )
 
+//接收流
 data class Stream(
+    //流头
     val header: Header,
+    //接收到的消息流
     val onMessage: Observable<ByteArray>,
+    //消息的拉取器
     val messagePuller: Observer<Int>,
+    //创建下游流的发送通道，订阅后会发送“流头”消息
     val createChannel: (header: Header.Builder) -> Single<Channel>,
+    //把接收的消息以自动流量控制的方式排向多个发送通道
     val pipeChannels: (PipeMap) -> UnPipe,
-    val getHeaderStream: () -> Observable<Stream>,
+    //接收发来的“子流”
+    val getChildStreams: () -> Observable<Stream>,
 )
+//通道与向此通道发送的消息流的映射关系
 typealias PipeMap = Map<Single<Channel>, Observable<HandledMessage>>
-
-data class UnPipeError(
-    override val message: String = "",
-) : Throwable()
 
 data class RemoteError(
     val type: String,
@@ -62,11 +80,15 @@ data class ProtocolError(
     override val message: String = "",
 ) : Throwable()
 
+//已处理消息，用于自动流量控制时发送给通道，收到的上游“流消息”与向下游发送的“已处理消息”必须1对1数量相等
 class HandledMessage(
+    //消息数据
     val message: ByteArray,
+    //忽略此消息，实际不会发送给通道，但会用于向上游的pull计数
     val ignore: Boolean = false,
 )
 
+//取消pipeChannels
 typealias UnPipe = () -> Unit
 
 
@@ -87,6 +109,7 @@ internal data class Context(
     val getMessageFramesByStreamId: (Int) -> Observable<Frame>,
 )
 
+//用于socket初始化的函数
 fun initWith(myInfo: InfoHeader): (Socket) -> Single<Connection> {
     return initWith(Single.just(myInfo))
 }
@@ -168,16 +191,16 @@ internal fun getStream(
     downstreamHeaderFrames: Observable<Frame>,
 ): (String) -> Single<Stream> {
     val m = ConcurrentHashMap<String, Pair<BehaviorSubject<Frame>, Accept>>()
-    val headerMap = register.mapValues { (handlerName, accept) ->
+    val headerMap = register.mapValues { (messageType, accept) ->
         val subject = BehaviorSubject.create<Frame>()
-        m[handlerName] = Pair(subject, accept)
+        m[messageType] = Pair(subject, accept)
         subject
     }
     downstreamHeaderFrames
         .doOnNext { frame ->
-            val handlerName = frame.header.handlerName
-            val (emitter, accept) = m[handlerName] ?: throw ProtocolError("not acceptable stream type")
-            m.remove(handlerName)
+            val messageType = frame.header.messageType
+            val (emitter, accept) = m[messageType] ?: throw ProtocolError("not acceptable stream type")
+            m.remove(messageType)
             emitter.onNext(frame)
 //            emitter.onComplete()
         }
@@ -185,16 +208,16 @@ internal fun getStream(
         .subscribe(
             {},
             { e ->
-                m.forEach { (handlerName, pair) ->
+                m.forEach { (messageType, pair) ->
                     val (emitter, accept) = pair
-                    m.remove(handlerName)
+                    m.remove(messageType)
                     emitter.onError(e)
                 }
                 ctx.close(e)
             },
         )
-    return { handlerName ->
-        val headerFrames = headerMap[handlerName]?.take(1)?.singleOrError()
+    return { messageType ->
+        val headerFrames = headerMap[messageType]?.take(1)?.singleOrError()
             ?: Single.error(ProtocolError("not acceptable stream type"))
         headerFrames.map { headerFrame -> createStream(ctx, headerFrame.header) }
     }
@@ -240,7 +263,7 @@ internal fun createStream(
         messagePuller = dataPuller,
         createChannel = createDownstreamChannel(ctx, streamId, header.registerMap),
         pipeChannels = pipeChannels(dataPuller),
-        getHeaderStream = parseHeaderStream(ctx, onMessage)
+        getChildStreams = parseHeaderStream(ctx, onMessage)
     )
 }
 
@@ -261,9 +284,9 @@ internal fun createDownstreamChannel(
 ): (header: Header.Builder) -> Single<Channel> {
     val newChannel = createChannel(ctx, 0, upstreamId)
     return { header ->
-        if (!remoteRegister.containsKey(header.handlerName)) {
+        if (!remoteRegister.containsKey(header.messageType)) {
             //缺少验证accept
-            Single.error(ProtocolError("the handlerName is not accepted"))
+            Single.error(ProtocolError("the messageType is not accepted"))
         } else {
             newChannel(header)
         }
@@ -380,13 +403,13 @@ internal fun pipeChannels(
                 state[key] = state[key]?.plus(pull) ?: 0
                 //找最小的pull，并向上游拉取
                 var minPull = Int.MAX_VALUE
-                state.forEach { (k, remain) ->
+                state.forEach { (_, remain) ->
                     if (remain < minPull)
                         minPull = remain
                 }
                 if (minPull != 0) {
                     messagePuller.onNext(minPull)
-                    state.mapValues { (k, v) -> v - minPull }.toMutableMap()
+                    state.mapValues { (_, v) -> v - minPull }.toMutableMap()
                 } else
                     state
             })

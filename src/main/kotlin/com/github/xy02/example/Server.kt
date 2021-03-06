@@ -8,17 +8,20 @@ import xtp.Header
 import xtp.PeerInfo
 import java.text.SimpleDateFormat
 
+val typeAcc = "Acc"
+val typeAccReply = "AccReply"
+
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建初始化函数
     val init = initWith(
         InfoHeader(
+            //可包含自身身份证明等信息
             peerInfo = PeerInfo.getDefaultInstance(),
-            register = mapOf("acc" to Accept.getDefaultInstance())
+            //注册可接收的messageType
+            register = mapOf(typeAcc to Accept.getDefaultInstance())
         )
     )
-    //创建TCP客户端Socket
-    //nioClientSocket(InetSocketAddress("localhost", 8001))
     //创建TCP服务端Sockets
     nioServerSockets()
         .subscribeOn(Schedulers.newThread())
@@ -40,10 +43,11 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-//累加收到的数据个数
+//累加收到的数据个数，并向下游流输出json字符串
+// {"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(conn: Connection) {
     //获取消息流
-    val onStream = conn.getStreamByType("acc")
+    val onStream = conn.getStreamByType(typeAcc)
     onStream.onErrorComplete().subscribe { stream ->
         //验证请求
         println("onHeader:${stream.header}\n")
@@ -63,7 +67,9 @@ private fun acc(conn: Connection) {
 //                bb.array()
             }
         //创建下游流
-        val accReplyChannel = stream.createChannel(Header.newBuilder().setHandlerName("accReply"))
+        val accReplyChannel = stream.createChannel(
+            Header.newBuilder().setMessageType(typeAccReply)
+        )
         //向下游输出，自动流量控制
         stream.pipeChannels(
             //可以有多个下游管道

@@ -1,6 +1,7 @@
 package com.github.xy02.example
 
 import com.github.xy02.xtp.*
+import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.schedulers.Schedulers
@@ -12,25 +13,21 @@ import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val s = BehaviorSubject.create<Int>()
-    s.onNext(1)
-    s.onComplete()
-    s.subscribe { println("s:$it") }
-    val infoHeader = InfoHeader(
+    //创建初始化函数
+    val init = initWith(InfoHeader(
         peerInfo = PeerInfo.getDefaultInstance(),
-    )
-    val init = initWith(infoHeader)
-    val theSocket = nioClientSocket(InetSocketAddress("localhost", 8001)).toObservable()
-    theSocket
+    ))
+    //创建TCP客户端Socket
+    nioClientSocket(InetSocketAddress("localhost", 8001))
         .subscribeOn(Schedulers.newThread())
-        .flatMapSingle { socket ->
+        .flatMap { socket ->
             println("onSocket")
             init(socket)
         }
         .retryWhen {
             it.flatMap { e ->
                 println(e)
-                Observable.timer(3, TimeUnit.SECONDS)
+                Flowable.timer(3, TimeUnit.SECONDS)
             }
         }
         .subscribe(
@@ -44,13 +41,12 @@ fun main(args: Array<String>) {
 }
 
 private fun crazyAcc(conn: Connection) {
-    val reply = "accReply"
     conn.createChannel(
         Header.newBuilder()
-            .setHandlerName("acc")
-            .putRegister(reply, Accept.getDefaultInstance())
+            .setMessageType(typeAcc)
+            .putRegister(typeAccReply, Accept.getDefaultInstance())
     ).subscribe { channel ->
-        crazyAccReply(channel.getStreamByType(reply))
+        crazyAccReply(channel.getStreamByType(typeAccReply))
         Observable.timer(1, TimeUnit.SECONDS)
             .flatMap {
                 channel.onPull.flatMap { pull ->
@@ -58,6 +54,10 @@ private fun crazyAcc(conn: Connection) {
                     Observable.just(ByteArray(1))
                         .repeat(pull.toLong())
                 }
+            }
+            .doOnComplete {
+                //TODO 实现Ping流，并让断流后重启所有流
+                println("doOnComplete")
             }
             .subscribe(channel.messageSender)
     }

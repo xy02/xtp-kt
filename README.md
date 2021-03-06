@@ -27,14 +27,17 @@ dependencies {
 ### 使用说明
 服务端：
 ```kotlin
+val typeAcc = "Acc"
+val typeAccReply = "AccReply"
+
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建初始化函数
     val init = initWith(InfoHeader(
         //可包含自身身份证明等信息
         peerInfo = PeerInfo.getDefaultInstance(),
-        //注册可接收的handlerName
-        register = mapOf("acc" to Accept.getDefaultInstance())
+        //注册可接收的messageType
+        register = mapOf(typeAcc to Accept.getDefaultInstance())
     ))
     //创建TCP客户端Socket
     //nioClientSocket(InetSocketAddress("localhost", 8001))
@@ -61,7 +64,7 @@ fun main(args: Array<String>) {
 // {"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(conn: Connection) {
     //获取消息流
-    val onStream = conn.getStreamByType("acc")
+    val onStream = conn.getStreamByType(typeAcc)
     onStream.onErrorComplete().subscribe { stream ->
         //验证请求，处理header.info等
         println("onHeader:${stream.header}\n")
@@ -73,9 +76,9 @@ private fun acc(conn: Connection) {
                 val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
                 json.toByteArray()
             }
-        //创建下游流（会发送header）
+        //创建下游流
         val accReplyChannel = stream.createChannel(
-            Header.newBuilder().setHandlerName("accReply")
+            Header.newBuilder().setMessageType(typeAccReply)
         )
         //向下游输出，自动流量控制
         stream.pipeChannels(
