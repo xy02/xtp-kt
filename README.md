@@ -78,7 +78,7 @@ private fun acc(conn: Connection) {
             }
         //创建下游流
         val accReplyChannel = stream.createChannel(
-            Header.newBuilder().setMessageType(typeAccReply)
+            Header.newBuilder().setInfoType(typeAccReply)
         )
         //向下游输出，自动流量控制
         stream.pipeChannels(
