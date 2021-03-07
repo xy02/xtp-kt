@@ -44,9 +44,9 @@ private fun crazyAcc(conn: Connection) {
     conn.createChannel(
         Header.newBuilder()
             .setInfoType(typeAcc)
-            .putRegister(typeAccReply, Accept.getDefaultInstance())
+            .putRegister(typeAccReply, Accept.newBuilder().setMaxConcurrentStream(1).build())
     ).subscribe { channel ->
-        crazyAccReply(channel.getStreamByType(typeAccReply))
+        crazyAccReply(channel.getStreamsByType(typeAccReply))
         Observable.timer(1, TimeUnit.SECONDS)
             .flatMap {
                 channel.onPull.flatMap { pull ->
@@ -63,7 +63,7 @@ private fun crazyAcc(conn: Connection) {
     }
 }
 
-private fun crazyAccReply(onStream: Single<Stream>) {
+private fun crazyAccReply(onStream: Observable<Stream>) {
     onStream.subscribe { (header, bufs, bufPuller) ->
         var count = 0
         val d = Observable.interval(1, TimeUnit.SECONDS)

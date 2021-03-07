@@ -32,7 +32,7 @@ data class Connection(
     //对端信息
     val remoteInfo: InfoHeader,
     //获取对端发来的下游流
-    val getStreamByType: (String) -> Single<Stream>,
+    val getStreamsByType: (String) -> Observable<Stream>,
     //创建下游流的发送通道，订阅后会发送“流头”消息
     val createChannel: (header: Header.Builder) -> Single<Channel>,
     //关闭连接
@@ -48,7 +48,7 @@ data class Channel(
     //流消息的发送器
     val messageSender: Observer<ByteArray>,
     //获取对端发来的下游流
-    val getStreamByType: (String) -> Single<Stream>,
+    val getStreamsByType: (String) -> Observable<Stream>,
     //创建“子流”的发送通道，订阅后会发送“流头”消息
     val createChildChannel: (header: Header.Builder) -> Single<Channel>,
 )
@@ -164,7 +164,6 @@ fun initWith(onMyInfo: Single<InfoHeader>): (Socket) -> Single<Connection> {
             )
             //缺少下游流头结束条件
             val downstreamHeaderFrames = ctx.getHeaderFramesByUpstreamId(initialSid)
-            val getStreamByType = getStream(ctx, myInfo.register, downstreamHeaderFrames)
             val singleRemoteInfo = headerFrames
                 .map { frame ->
                     val peerInfo = PeerInfo.parseFrom(frame.header.info)
@@ -177,49 +176,36 @@ fun initWith(onMyInfo: Single<InfoHeader>): (Socket) -> Single<Connection> {
                 }
                 .map { remoteInfo ->
                     Connection(
-                        remoteInfo = remoteInfo, getStreamByType = getStreamByType, close = close,
+                        remoteInfo = remoteInfo,
+                        getStreamsByType = getStreams(ctx, myInfo.register, downstreamHeaderFrames),
                         createChannel = createDownstreamChannel(ctx, initialSid, remoteInfo.register),
+                        close = close,
                     )
                 }
         }
     }
 }
 
-internal fun getStream(
+internal fun getStreams(
     ctx: Context,
     register: Map<String, Accept>,
     downstreamHeaderFrames: Observable<Frame>,
-): (String) -> Single<Stream> {
-    val m = ConcurrentHashMap<String, Pair<BehaviorSubject<Frame>, Accept>>()
-    val headerMap = register.mapValues { (infoType, accept) ->
-        val subject = BehaviorSubject.create<Frame>()
-        m[infoType] = Pair(subject, accept)
-        subject
+): (String) -> Observable<Stream> {
+    val m = ConcurrentHashMap<String, Observable<Stream>>()
+    val getHeaderFramesByInfoType = getSubValues(downstreamHeaderFrames) { frame -> frame.header.infoType }
+    register.forEach { (infoType, accept) ->
+        //缺少验证accept
+        //不确定被订阅的时机，先缓存
+        val streams = getHeaderFramesByInfoType(infoType)
+            .map { headerFrame -> createStream(ctx, headerFrame.header) }
+            .replay(accept.maxConcurrentStream)
+            .refCount()
+        m[infoType] = streams
+        //缺少takeUtil
+        streams.onErrorComplete().subscribe()
     }
-    downstreamHeaderFrames
-        .doOnNext { frame ->
-            val infoType = frame.header.infoType
-            val (emitter, accept) = m[infoType] ?: throw ProtocolError("not acceptable stream type")
-            m.remove(infoType)
-            emitter.onNext(frame)
-//            emitter.onComplete()
-        }
-        .take(register.size.toLong())
-        .subscribe(
-            {},
-            { e ->
-                m.forEach { (infoType, pair) ->
-                    val (emitter, accept) = pair
-                    m.remove(infoType)
-                    emitter.onError(e)
-                }
-                ctx.close(e)
-            },
-        )
     return { infoType ->
-        val headerFrames = headerMap[infoType]?.take(1)?.singleOrError()
-            ?: Single.error(ProtocolError("not acceptable stream type"))
-        headerFrames.map { headerFrame -> createStream(ctx, headerFrame.header) }
+        m[infoType] ?: Observable.error(ProtocolError("not acceptable info type"))
     }
 }
 
@@ -339,12 +325,11 @@ internal fun createChannel(
             .autoConnect()
         val messageSender = PublishSubject.create<ByteArray>()
         val downstreamHeaderFrames = ctx.getHeaderFramesByUpstreamId(streamId)
-        val getStreamByType = getStream(ctx, header.registerMap, downstreamHeaderFrames)
         val channel = Channel(
             onPull = pulls,
             onAvailable = isAvailable,
             messageSender = messageSender,
-            getStreamByType = getStreamByType,
+            getStreamsByType = getStreams(ctx, header.registerMap, downstreamHeaderFrames),
             createChildChannel = createChannel(ctx, streamId, 0)
         )
         emitter.onSuccess(channel)

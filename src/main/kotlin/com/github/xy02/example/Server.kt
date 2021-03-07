@@ -19,7 +19,9 @@ fun main(args: Array<String>) {
             //可包含自身身份证明等信息
             peerInfo = PeerInfo.getDefaultInstance(),
             //注册可接收的infoType
-            register = mapOf(typeAcc to Accept.getDefaultInstance())
+            register = mapOf(
+                typeAcc to Accept.newBuilder().setMaxConcurrentStream(10).build()
+            )
         )
     )
     //创建TCP服务端Sockets
@@ -47,7 +49,7 @@ fun main(args: Array<String>) {
 // {"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(conn: Connection) {
     //获取消息流
-    val onStream = conn.getStreamByType(typeAcc)
+    val onStream = conn.getStreamsByType(typeAcc)
     onStream.onErrorComplete().subscribe { stream ->
         //验证请求
         println("onHeader:${stream.header}\n")

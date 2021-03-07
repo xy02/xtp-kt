@@ -5,7 +5,7 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.5
+    协议版本：0.6
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
@@ -69,6 +69,8 @@ message Header {
 
 //流的接受条件
 message Accept {
+    //最大并存流数
+    int32 max_concurrent_stream = 1;
     //待扩展，可以是消息类型、序列化类型、压缩方案等
 }
 
