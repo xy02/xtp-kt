@@ -7,6 +7,7 @@ import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import io.reactivex.rxjava3.subjects.PublishSubject
+import xtp.Frame
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.nio.ByteBuffer
@@ -153,14 +154,15 @@ fun nioClientSocket(
 
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
-    val sender = PublishSubject.create<ByteArray>()
-    val buffers = Observable.create<ByteArray> { emitter1 ->
+    val sender = PublishSubject.create<Frame>()
+    val frames = Observable.create<ByteArray> { emitter1 ->
         sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
         emitter1.setDisposable(Disposable.fromAction { sender.onComplete() })
-    }
+    }.map(Frame::parseFrom)
 //        .observeOn(Schedulers.computation())
         .share()
     sender
+        .map(Frame::toByteArray)
 //        .observeOn(Schedulers.io())
         .subscribe(
             { buf ->
@@ -189,7 +191,7 @@ internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): 
                 sc.close()
             }
         )
-    return Socket(buffers, sender)
+    return Socket(frames, sender)
 }
 
 internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment): Boolean {

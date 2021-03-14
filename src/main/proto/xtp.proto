@@ -5,17 +5,14 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.6
+    协议版本：0.7
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
     定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，“生产者”生产的是多个有序的“消息（Frame.message）”，
     “生产者”必须满足规则：发送的“消息”的总数必须小于等于“消费者”发送的“拉取（Frame.pull）”总和，
-    “消费者”可以根据“生产者”提供的“流的接受条件”创建新的“下游流”，
-    连接建立后，两端必须先发送一次Frame.header建立各自的第一条流，流ID都为1（实际是两个方向的ID为1的不同流），
-    信息类型为xtp.PeerInfo，消息类型为xtp.Ping（定期发送Ping），对端需要检查超时，
-    并通过Header.register不断建立下游流，新流的消息类型也可以是xtp.Header（发送子流的流），
-    一条流以生产者发送header开始生命周期，以生产者发送end后结束生命周期
+    连接建立后，两端必须先发送一次Frame.message.header建立各自的第一条流，流ID都为1（实际是两个方向的ID为1的不同流），
+    一条流以生产者发送Frame.message.header开始生命周期，以生产者发送Frame.end结束生命周期，
 
     流生命周期举例：
     例一：
@@ -32,51 +29,45 @@ package xtp;
 
 //数据帧，连接上的基础数据载体
 message Frame {
-    //流ID，表示此数据帧属于哪条流，0表示连接
-    int32 stream_id = 1;
+    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message.header
+    int32 flow_id = 1;
     oneof type {
-        //流头，表示发送端（生产者）开启新的流，stream_id必须为0
-        Header header = 2;
-        //消息，表示发送端（生产者）发送了一条流消息，可反序列化成xtp.Header,xtp.Ping
-        bytes message = 3;
+        //消息，表示发送端（生产者）发送了一条流消息
+        Message message = 2;
         //结束，表示发送端（生产者）结束发送流消息，流的命周期结束
-        End end = 4;
+        End end = 3;
         //拉取数，表示发送端（消费者）的可接收消息数的增量，大于0，用于“消息”的流量控制
         //与ReactiveStream里的request语义相同
-        int32 pull = 5;
+        int32 pull = 4;
         //取消流的原因，表示发送端（消费者）取消接收流消息，等待对端发送end后流的生命周期结束
-        Error cancel = 6;
+        Error cancel = 5;
     }
 }
 
-//流头，表示发送端请求创建一个流，只能请求对端注册过的“信息类型”
-message Header {
-    //流ID，大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
-    //生命周期已结束的流的ID可作为新流重新开启
-    int32 stream_id = 1;
-    //上游的流ID，是对端先开启的流ID
-    int32 upstream_id = 2;
-    //信息类型，此流作为下游流时，上游必须已先注册此“信息类型”，例"xtp.PeerInfo","your.Setting"
-    string info_type = 3;
-    //信息（可空）
-    bytes info = 4;
-    //允许接受的下游流“信息类型”（可空），此流结束时就不再接受新的下游流
-    map<string, Accept> register = 5;
-    //消息类型（可空），表示流传输的消息类型名
-    // 例"xtp.Ping","xtp.Header","client.Request","service.Reply"
-    string message_type = 6;
+//流消息
+message Message {
+    oneof type {
+        //流头
+        Header header = 1;
+        //二进制数据
+        bytes data = 2;
+    }
 }
 
-//流的接受条件
-message Accept {
-    //最大并存流数
-    int32 max_concurrent_stream = 1;
-    //待扩展，可以是消息类型、序列化类型、压缩方案等
+//流头，表示发送端请求创建一条新流，只能请求对端注册过的“功能名”fn
+message Header {
+    //流ID，大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
+    //生命周期已结束的流的ID可作为新流重新开启（可选功能）
+    int32 flow_id = 1;
+    //功能名（可空），表示处理此“流”的函数名，接收端应该检查此功能名是否已经注册
+    string fn = 2;
+    //信息（可空），任意数据
+    bytes info = 3;
 }
 
 //结束发送消息
 message End {
-    //错误（可空）
+    //错误（可空），空时表示流成功结束
     Error error = 1;
 }
 
@@ -87,14 +78,3 @@ message Error {
     //错误消息（可空）
     string str_message = 2;
 }
-
-//端信息
-message PeerInfo{
-    //接受对端的ping间隔
-    int32 accept_ping_interval = 1;
-    //数据（可空），可包含发送端身份等数据
-    bytes data = 2;
-}
-
-//存活通知
-message Ping {}

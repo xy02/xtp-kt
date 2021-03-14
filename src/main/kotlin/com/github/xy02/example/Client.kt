@@ -1,28 +1,25 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.Flow
+import com.github.xy02.xtp.init
+import com.github.xy02.xtp.nioClientSocket
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.schedulers.Schedulers
-import io.reactivex.rxjava3.subjects.BehaviorSubject
-import xtp.Accept
 import xtp.Header
-import xtp.PeerInfo
 import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    //创建初始化函数
-    val init = initWith(InfoHeader(
-        peerInfo = PeerInfo.getDefaultInstance(),
-    ))
+    val apiNumber = 1
     //创建TCP客户端Socket
     nioClientSocket(InetSocketAddress("localhost", 8001))
         .subscribeOn(Schedulers.newThread())
         .flatMap { socket ->
             println("onSocket")
-            init(socket)
+            init(Header.newBuilder(), socket)
         }
         .retryWhen {
             it.flatMap { e ->
@@ -30,23 +27,33 @@ fun main(args: Array<String>) {
                 Flowable.timer(3, TimeUnit.SECONDS)
             }
         }
+        .flatMap { conn ->
+            println("onConnection")
+            conn.channel.onPull
+                .take(1)
+                .singleOrError()
+                .map { pull ->
+                    println("pull:$pull")
+                    if (pull < apiNumber)
+                        throw Exception("not enough pull")
+                    crazyAcc(conn)
+                }
+        }
         .subscribe(
-            { conn ->
-                println("onConnection")
-                crazyAcc(conn)
-            },
+            {},
             { err -> err.printStackTrace() },
         )
     readLine()
 }
 
 private fun crazyAcc(conn: Connection) {
-    conn.createChannel(
-        Header.newBuilder()
-            .setInfoType(typeAcc)
-            .putRegister(typeAccReply, Accept.newBuilder().setMaxConcurrentStream(1).build())
+    //订阅应答流
+    crazyAccReply(conn.flow.getSingleChildFlowByFn("accReply"))
+    conn.flow.messagePuller.onNext(1)
+    //新建请求流
+    conn.channel.createChildChannel(
+        Header.newBuilder().setFn("acc")
     ).subscribe { channel ->
-        crazyAccReply(channel.getStreamsByType(typeAccReply))
         Observable.timer(1, TimeUnit.SECONDS)
             .flatMap {
                 channel.onPull.flatMap { pull ->
@@ -56,31 +63,31 @@ private fun crazyAcc(conn: Connection) {
                 }
             }
             .doOnComplete {
-                //TODO 实现Ping流，并让断流后重启所有流
                 println("doOnComplete")
             }
-            .subscribe(channel.messageSender)
+            .subscribe(channel.dataSender)
     }
 }
 
-private fun crazyAccReply(onStream: Observable<Stream>) {
-    onStream.subscribe { (header, bufs, bufPuller) ->
+private fun crazyAccReply(singleFlow: Single<Flow>) {
+    singleFlow.subscribe { flow ->
         var count = 0
         val d = Observable.interval(1, TimeUnit.SECONDS)
             .subscribe {
                 println("${count / (it + 1)}/s")
             }
-        bufs.scan(0) { acc, _ -> acc + 1 }
+        flow.onData
+            .scan(0) { acc, _ -> acc + 1 }
             .doOnNext { count = it }
             .subscribe({}, { d.dispose() })
 //            val begin = System.currentTimeMillis()
 
         //验证请求
-        println("onHeader:${header}\n")
-        val pulls = bufs
+        println("onHeader:${flow.header}\n")
+        val pulls = flow.onData
 //                .doOnNext { println("buf") }
             .map { 1 }
         Observable.merge(pulls, Observable.just(100000))
-            .subscribe(bufPuller)
+            .subscribe(flow.messagePuller)
     }
 }
