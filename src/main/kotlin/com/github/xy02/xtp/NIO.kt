@@ -155,10 +155,16 @@ fun nioClientSocket(
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
     val sender = PublishSubject.create<Frame>()
-    val frames = Observable.create<ByteArray> { emitter1 ->
-        sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
-        emitter1.setDisposable(Disposable.fromAction { sender.onComplete() })
-    }.map(Frame::parseFrom)
+    val frames = Observable
+        .create<ByteArray> { emitter1 ->
+            sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
+            emitter1.setDisposable(Disposable.fromAction {
+                println("dispose")
+                sender.onComplete()
+            })
+        }
+        .takeUntil(sender.ignoreElements().toObservable<Unit>())
+        .map(Frame::parseFrom)
 //        .observeOn(Schedulers.computation())
         .share()
     sender
@@ -199,6 +205,7 @@ internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment):
     try {
         val bytesRead = sc.read(buf)
         if (bytesRead == -1) {
+            println("read -1")
             sc.close()
             if (!att.emitter.isDisposed) att.emitter.tryOnError(java.nio.channels.ClosedChannelException())
             return false

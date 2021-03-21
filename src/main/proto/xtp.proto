@@ -5,18 +5,21 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.7
+    协议版本：0.8
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
     定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，“生产者”生产的是多个有序的“消息（Frame.message）”，
     “生产者”必须满足规则：发送的“消息”的总数必须小于等于“消费者”发送的“拉取（Frame.pull）”总和，
-    连接建立后，两端必须先发送一次Frame.message.header建立各自的第一条流，流ID都为1（实际是两个方向的ID为1的不同流），
-    一条流以生产者发送Frame.message.header开始生命周期，以生产者发送Frame.end结束生命周期，
+    一条流以生产者发送Frame.message（以Header序列化）开始生命周期，以生产者发送Frame.end结束生命周期。
+
+    Socket创建后，两端必须建立第一条流（连接），各自发送一次Frame.message（以Header序列化），
+    其中Frame.flow_id为0，Header.flow_id为1（实际是两个方向的ID为1的不同流），
+    流的消息类型可以是xtp.Header以之建立新的子流，
 
     流生命周期举例：
     例一：
-    header->
+    message(Header)->
     <-pull
     message->
     message->
@@ -29,11 +32,11 @@ package xtp;
 
 //数据帧，连接上的基础数据载体
 message Frame {
-    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message.header
+    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message（以Header序列化）
     int32 flow_id = 1;
     oneof type {
         //消息，表示发送端（生产者）发送了一条流消息
-        Message message = 2;
+        bytes message = 2;
         //结束，表示发送端（生产者）结束发送流消息，流的命周期结束
         End end = 3;
         //拉取数，表示发送端（消费者）的可接收消息数的增量，大于0，用于“消息”的流量控制
@@ -44,25 +47,18 @@ message Frame {
     }
 }
 
-//流消息
-message Message {
-    oneof type {
-        //流头
-        Header header = 1;
-        //二进制数据
-        bytes data = 2;
-    }
-}
-
-//流头，表示发送端请求创建一条新流，只能请求对端注册过的“功能名”fn
+//流头，表示发送端请求创建一条新流
 message Header {
     //流ID，大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
-    //生命周期已结束的流的ID可作为新流重新开启（可选功能）
     int32 flow_id = 1;
-    //功能名（可空），表示处理此“流”的函数名，接收端应该检查此功能名是否已经注册
-    string fn = 2;
+    //信息类型，用于区分不同类型的流的处理方法，接收端应该检查此类型名是否已经注册
+    string info_type = 2;
     //信息（可空），任意数据
     bytes info = 3;
+    //上游流ID（可空），表示本流是由上游流变换而来，例如应答流是从请求流变换而来
+    int32 upstream_flow_id = 4;
+    //消息类型（可空），例："xtp.Header","client.Request","service.Reply"
+    string message_type = 5;
 }
 
 //结束发送消息

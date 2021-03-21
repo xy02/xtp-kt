@@ -48,11 +48,11 @@ fun main(args: Array<String>) {
 
 private fun crazyAcc(conn: Connection) {
     //订阅应答流
-    crazyAccReply(conn.flow.getSingleChildFlowByFn("accReply"))
+    crazyAccReply(conn.flow.getSingleChildFlowByType("AccReply"))
     conn.flow.messagePuller.onNext(1)
     //新建请求流
     conn.channel.createChildChannel(
-        Header.newBuilder().setFn("acc")
+        Header.newBuilder().setInfoType("Acc")
     ).subscribe { channel ->
         Observable.timer(1, TimeUnit.SECONDS)
             .flatMap {
@@ -65,7 +65,7 @@ private fun crazyAcc(conn: Connection) {
             .doOnComplete {
                 println("doOnComplete")
             }
-            .subscribe(channel.dataSender)
+            .subscribe(channel.messageSender)
     }
 }
 
@@ -76,7 +76,7 @@ private fun crazyAccReply(singleFlow: Single<Flow>) {
             .subscribe {
                 println("${count / (it + 1)}/s")
             }
-        flow.onData
+        flow.onMessage
             .scan(0) { acc, _ -> acc + 1 }
             .doOnNext { count = it }
             .subscribe({}, { d.dispose() })
@@ -84,7 +84,7 @@ private fun crazyAccReply(singleFlow: Single<Flow>) {
 
         //验证请求
         println("onHeader:${flow.header}\n")
-        val pulls = flow.onData
+        val pulls = flow.onMessage
 //                .doOnNext { println("buf") }
             .map { 1 }
         Observable.merge(pulls, Observable.just(100000))

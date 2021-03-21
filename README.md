@@ -19,8 +19,8 @@ repositories {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.0.8"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
-    implementation 'com.gitee.xy02:xtp-kt:0.8.0'
-    //implementation 'com.github.xy02:xtp-kt:0.8.0'
+    implementation 'com.gitee.xy02:xtp-kt:0.9.0'
+    //implementation 'com.github.xy02:xtp-kt:0.9.0'
 }
 ```
 
@@ -42,6 +42,8 @@ fun main(args: Array<String>) {
                 println("onConnection")
                 //业务函数
                 acc(conn)
+                //拉取才会收到请求（流头消息）
+                conn.flow.messagePuller.onNext(10)
             },
             { err -> err.printStackTrace() },
         )
@@ -52,17 +54,14 @@ fun main(args: Array<String>) {
 // {"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(conn: Connection) {
     //订阅消息流
-    val onFlow = conn.flow.getChildFlowByFn("acc")
-    conn.flow.messagePuller.onNext(10)
-    //处理新流
-    onFlow.onErrorComplete()
+    conn.flow.getChildFlowByType("Acc")
         .flatMapSingle { flow ->
-            //验证请求，处理header.info等
+            //处理新流，验证请求，处理header.info等
             println("onHeader:${flow.header}\n")
             //创建下游流
             conn.channel
                 .createChildChannel(
-                    Header.newBuilder().setFn("accReply")
+                    Header.newBuilder().setInfoType("AccReply")
                 )
                 .map { channel -> Pair(flow, channel) }
         }
@@ -76,7 +75,7 @@ private fun acc(conn: Connection) {
                     json.toByteArray()
                 }
             //向下游输出处理过的数据
-            handledData.subscribe(accReplyChannel.dataSender)
+            handledData.subscribe(accReplyChannel.messageSender)
             //自动流量控制
             accFlow.pipeChannels(
                 //可以有多个下游管道

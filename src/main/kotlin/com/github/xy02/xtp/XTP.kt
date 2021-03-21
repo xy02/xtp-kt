@@ -29,16 +29,10 @@ class Channel(
     val onPull: Observable<Int>,
     //是否可发送流消息
     val onAvailable: Observable<Boolean>,
+    //流消息的发送器
+    val messageSender: Observer<ByteArray>,
     //创建“子流”的发送通道，订阅后会发送“流头”消息
     val createChildChannel: (header: Header.Builder) -> Single<Channel>,
-    //发送二进制数据
-    val sendData: (ByteArray) -> Unit,
-    //发送成功结束
-    val sendComplete: () -> Unit,
-    //发送错误结束
-    val sendError: (Throwable) -> Unit,
-    //二进制数据发送器
-    val dataSender: Observer<ByteArray>,
 )
 
 //接收流（流的消费者）
@@ -48,17 +42,15 @@ class Flow(
     //消息流的拉取器，收到的消息总数不得大于拉取的总和
     val messagePuller: Observer<Int>,
     //对端发来的消息流
-    val onMessage: Observable<Message>,
-    //对端发来的二进制数据流
-    val onData: Observable<ByteArray>,
-    //对端发来的“子流”（当收到“流头”消息时）
-    val onChildFlow: Observable<Flow>,
-    //按fn获取“子流”
-    val getChildFlowByFn: (String) -> Observable<Flow>,
-    //按fn获取一个“子流”
-    val getSingleChildFlowByFn: (String) -> Single<Flow>,
+    val onMessage: Observable<ByteArray>,
+    //按流类型获取“子流”
+    val getChildFlowByType: (String) -> Observable<Flow>,
+    //按流类型获取一个“子流”
+    val getSingleChildFlowByType: (String) -> Single<Flow>,
     //自动流量控制，用于有多个下游通道时自动向上游拉取消息
     val pipeChannels: (PipeMap) -> Completable,
+    //按上游流ID获取子流
+    val getFlowByUpstreamId: (Int) -> Observable<Flow>,
 )
 
 //pipe配置
@@ -113,11 +105,8 @@ fun init(myHeader: Header.Builder, socket: Socket): Single<Connection> {
         watchCancelFramesByFlowId = getSubValues(cancelFrames, Frame::getFlowId),
     )
     val firstRemoteHeader = ctx.watchMessageFramesByFlowId(0)
-        .map { frame ->
-            if (frame.message.typeCase != Message.TypeCase.HEADER)
-                throw ProtocolError("require first header message")
-            frame.message.header
-        }
+        .map { frame -> Header.parseFrom(frame.message) }
+        .doOnNext { if (it.flowId != 1) throw ProtocolError("first flowId must be 1") }
         .take(1).singleOrError()
     return createChannel(ctx, 0)(myHeader)
         .flatMap { channel ->
@@ -144,7 +133,7 @@ internal fun newFlow(
         }
     val messagePuller = PublishSubject.create<Int>()
     val onMessage = ctx.watchMessageFramesByFlowId(flowId)
-        .map { frame -> frame.message }
+        .map { frame -> frame.message.toByteArray() }
         .takeUntil(theEnd)
         .takeUntil(messagePuller.ignoreElements().toObservable<Any>())
         .share()
@@ -162,20 +151,23 @@ internal fun newFlow(
         .map { builder -> builder.setFlowId(flowId).build() }
         .doOnNext { ctx.socket.frameSender.onNext(it) }
     pullFrames.subscribe() //side effect
-    val getMessagesByType = getSubValues(onMessage, Message::getTypeCase)
-    val onData = getMessagesByType(Message.TypeCase.DATA).map { it.data.toByteArray() }
-    val onChildFlow = getMessagesByType(Message.TypeCase.HEADER).map { newFlow(ctx, it.header) }
-    val getChildFlowByFn = getSubValues(onChildFlow) { flow -> flow.header.fn }
-    val getSingleChildFlowByFn = { fn: String -> getChildFlowByFn(fn).take(1).singleOrError() }
+    val onChildFlow = onMessage.map(Header::parseFrom)
+        .doOnNext {
+            if (it.flowId == 0 || it.infoType.isNullOrEmpty())
+                throw ProtocolError("require header message")
+        }
+        .map { newFlow(ctx, it) }
+    val getChildFlowByType = getSubValues(onChildFlow) { flow -> flow.header.infoType }
+    val getSingleChildFlowByType = { type: String -> getChildFlowByType(type).take(1).singleOrError() }
+    val getFlowByUpstreamId = getSubValues(onChildFlow) { flow -> flow.header.upstreamFlowId }
     return Flow(
         header = header,
         messagePuller = messagePuller,
         onMessage = onMessage,
-        onData = onData,
-        onChildFlow = onChildFlow,
-        getChildFlowByFn = getChildFlowByFn,
-        getSingleChildFlowByFn = getSingleChildFlowByFn,
+        getChildFlowByType = getChildFlowByType,
+        getSingleChildFlowByType = getSingleChildFlowByType,
         pipeChannels = pipeChannels(messagePuller),
+        getFlowByUpstreamId = getFlowByUpstreamId,
     )
 }
 
@@ -185,7 +177,7 @@ internal fun createChannel(
 ): (header: Header.Builder) -> Single<Channel> = { header ->
     Single.create<Channel> { emitter ->
         val flowId = ctx.newFlowId()
-        val availableMessageSender = PublishSubject.create<Message>()
+        val availableMessageSender = PublishSubject.create<ByteArray>()
         val remoteCancel = ctx.watchCancelFramesByFlowId(flowId)
             .take(1)
             .doOnNext { frame ->
@@ -194,7 +186,7 @@ internal fun createChannel(
             }
         val sentItemsWithNoError = availableMessageSender
             .takeUntil(remoteCancel)
-            .map { message -> Frame.newBuilder().setMessage(message) }
+            .map { message -> Frame.newBuilder().setMessage(ByteString.copyFrom(message)) }
             .concatWith(Single.just(Frame.newBuilder().setEnd(End.getDefaultInstance())))
             .onErrorReturn { e ->
                 val error = Error.newBuilder().setType(e.javaClass.name).setStrMessage(e.message ?: "")
@@ -218,15 +210,12 @@ internal fun createChannel(
             .distinctUntilChanged()
             .replay(1)
             .autoConnect()
-        val dataSender = PublishSubject.create<ByteArray>()
+        val messageSender = PublishSubject.create<ByteArray>()
         //side effect
-        dataSender.withLatestFrom(isAvailable,
+        messageSender.withLatestFrom(isAvailable,
             { data, ok ->
                 //不可发送的消息直接丢弃
-                if (ok) {
-                    val message = Message.newBuilder().setData(ByteString.copyFrom(data)).build()
-                    availableMessageSender.onNext(message)
-                }
+                if (ok) availableMessageSender.onNext(data)
             })
             .subscribe(
                 { },
@@ -236,16 +225,13 @@ internal fun createChannel(
         val channel = Channel(
             onPull = pulls,
             onAvailable = isAvailable,
+            messageSender = messageSender,
             createChildChannel = createChannel(ctx, flowId),
-            sendData = dataSender::onNext,
-            sendComplete = dataSender::onComplete,
-            sendError = dataSender::onError,
-            dataSender = dataSender,
         )
         emitter.onSuccess(channel)
         //发送header
-        val headerMessage = Message.newBuilder()
-            .setHeader(header.setFlowId(flowId))
+        val headerMessage = header.setFlowId(flowId)
+            .build().toByteString()
         val headerFrame = Frame.newBuilder()
             .setFlowId(parentFlowId)
             .setMessage(headerMessage)
@@ -292,7 +278,7 @@ internal fun pipeChannels(
 }
 
 internal fun getPullIncrements(
-    messages: Observable<Message>,
+    messages: Observable<ByteArray>,
     pulls: Observable<Int>,
 ): Observable<Int> = Observable.create { emitter ->
     val sub = Observable.merge(
