@@ -34,7 +34,7 @@ data class SocketsSource(
 
 data class SocketContext(
     val groupId: Int,
-    val theSocket: Single<Socket>,
+    val theSocket: Single<Connection>,
 )
 
 internal data class SocketChannelAttachment(
@@ -102,15 +102,15 @@ fun nioSocketsSource(): SocketsSource {
 //        println("selector closed tid : ${Thread.currentThread().id}")
         it.onComplete()
     }.subscribeOn(Schedulers.io())
-    val getSocketContextByGroupId = getSubValues(sockets) { it.groupId }
+    val getSocketContextByGroupId = sockets.getSubValues { it.groupId }
     val gid = AtomicInteger()
     val newGroupId = { gid.getAndIncrement() }
     return SocketsSource(selector, newGroupId, getSocketContextByGroupId)
 }
 
-fun nioServerSockets(
+fun nioServer(
     options: TCPServerOptions = TCPServerOptions(),
-): Observable<Socket> {
+): Observable<Connection> {
     val source = options.source
     val gid = source.newGroupId()
     return source.getSocketContextByGroupId(gid)
@@ -128,10 +128,10 @@ fun nioServerSockets(
         }
 }
 
-fun nioClientSocket(
+fun nioClient(
     address: SocketAddress,
     options: TCPClientOptions = TCPClientOptions(),
-): Single<Socket> {
+): Single<Connection> {
     val source = options.source
     return Single.fromCallable { source.newGroupId() }
         .flatMap { gid ->
@@ -153,7 +153,7 @@ fun nioClientSocket(
 }
 
 
-internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
+internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Connection {
     val sender = PublishSubject.create<Frame>()
     val frames = Observable
         .create<ByteArray> { emitter1 ->
@@ -197,7 +197,7 @@ internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): 
                 sc.close()
             }
         )
-    return Socket(frames, sender)
+    return Connection(frames, sender)
 }
 
 internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment): Boolean {

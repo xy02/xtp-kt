@@ -5,63 +5,86 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.8
+    协议版本：0.9
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
-    定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，“生产者”生产的是多个有序的“消息（Frame.message）”，
-    “生产者”必须满足规则：发送的“消息”的总数必须小于等于“消费者”发送的“拉取（Frame.pull）”总和，
-    一条流以生产者发送Frame.message（以Header序列化）开始生命周期，以生产者发送Frame.end结束生命周期。
-
-    Socket创建后，两端必须建立第一条流（连接），各自发送一次Frame.message（以Header序列化），
-    其中Frame.flow_id为0，Header.flow_id为1（实际是两个方向的ID为1的不同流），
-    流的消息类型可以是xtp.Header以之建立新的子流，
+    定义一条“流”包含一个“本端”的“请求者”和一个“对端”的“响应者”，
+    以“请求者”发送Frame.message（以Request序列化）开始“流”的生命周期，然后“响应者”发送Response响应，
+    若Response.has_messages为false(或空值)则“流”的生命周期结束，否则以“响应者”发送Frame.end结束生命周期，
+    当其为true时，“请求者”可发送多次“拉取量”Frame.pull以期望得到“响应者”多次发送的有序的“流消息”Frame.message，
+    “响应者”发送的“流消息”的总数必须小于等于“请求者”发送的“拉取量(Frame.pull)”总和。
 
     流生命周期举例：
     例一：
-    message(Header)->
-    <-pull
-    message->
-    message->
-    <-pull
-    message->
-    <-cancel
-    end->
+    message(Request)->
+    <-response
+
+    例二：
+    message(Request)->
+    <-response{has_messages=true}
+    pull->
+    <-message
+    <-message
+    pull->
+    <-message
+    <-end
  */
 package xtp;
 
 //数据帧，连接上的基础数据载体
 message Frame {
-    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message（以Header序列化）
+    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message（以Request序列化）
     int32 flow_id = 1;
     oneof type {
-        //消息，表示发送端（生产者）发送了一条流消息
+        //流的消息，表示发送端（响应者）发送了一个流消息
+        //发送的消息的总数必须小于等于“拉取量(Frame.request)”的总和
         bytes message = 2;
-        //结束，表示发送端（生产者）结束发送流消息，流的命周期结束
-        End end = 3;
-        //拉取数，表示发送端（消费者）的可接收消息数的增量，大于0，用于“消息”的流量控制
+        //流的响应，表示发送端（响应者）响应请求，若其中has_messages为true表示有后续流消息（使用pull拉取）
+        Response response = 3;
+        //流的结束，表示发送端（响应者）结束发送流消息，流的命周期结束
+        End end = 4;
+        //拉取量，表示发送端（请求者）的可接收消息数的增量，大于0，用于“流消息”的流量控制
         //与ReactiveStream里的request语义相同
-        int32 pull = 4;
-        //取消流的原因，表示发送端（消费者）取消接收流消息，等待对端发送end后流的生命周期结束
-        Error cancel = 5;
+        int32 pull = 5;
+        //取消流的原因，表示发送端（请求者）取消接收流消息，等待对端发送end后流的生命周期结束
+        Error cancel = 6;
     }
 }
 
-//流头，表示发送端请求创建一条新流
-message Header {
-    //流ID，大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
+//流的请求，表示发送端请求“对端”响应
+message Request {
+    //流标识，必须大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
     int32 flow_id = 1;
-    //信息类型，用于区分不同类型的流的处理方法，接收端应该检查此类型名是否已经注册
-    string info_type = 2;
-    //信息（可空），任意数据
-    bytes info = 3;
-    //上游流ID（可空），表示本流是由上游流变换而来，例如应答流是从请求流变换而来
-    int32 upstream_flow_id = 4;
-    //消息类型（可空），例："xtp.Header","client.Request","service.Reply"
-    string message_type = 5;
+    //类型（可空），例："ListUserApi","GetFile"
+    string type = 2;
+    //数据（可空）,可包含订阅者身份等数据
+    bytes data = 3;
+    //待扩展，指定压缩算法、序列化器等
 }
 
-//结束发送消息
+//流的响应
+message Response {
+    //类型（可空），为空表示流结束
+    oneof type {
+        //流结束，表示无后续流消息
+        End end = 1;
+        //流头，表示有后续流消息
+        Header header = 2;
+    }
+    //数据（可空），任意数据
+    bytes data = 3;
+}
+
+//流头
+message Header {
+    //流消息类型（可空），例："xtp.Request","Record","Bytes"
+    //流消息可以是一个新的请求
+    string message_type = 4;
+    //待扩展，描述流的元数据
+}
+
+//结束
 message End {
     //错误（可空），空时表示流成功结束
     Error error = 1;

@@ -6,10 +6,11 @@ import io.reactivex.rxjava3.disposables.Disposable
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-fun <K, V> getSubValues(values: Observable<V>, keySelector: (V) -> K): (K) -> Observable<V> {
+//获取子数据流
+fun <K, V> Observable<V>.getSubValues(keySelector: (V) -> K): (K) -> Observable<V> {
     val m = ConcurrentHashMap<K, MutableSet<ObservableEmitter<V>>>()
 //    val m = mutableMapOf<K,MutableSet<ObservableEmitter<V>>>()
-    val theEnd = values
+    val theEnd = this
         .doOnNext { v: V ->
             val key = keySelector(v)
             m[key]?.forEach { emitter -> emitter.onNext(v) }
