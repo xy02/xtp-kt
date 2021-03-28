@@ -5,6 +5,7 @@ import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.subjects.PublishSubject
 import xtp.*
+import java.util.concurrent.ConcurrentLinkedQueue
 
 //流消息的发送通道
 class Channel internal constructor(
@@ -56,13 +57,39 @@ class Channel internal constructor(
     //流消息的发送器
     val messageSender: PublishSubject<ByteArray> = PublishSubject.create()
 
+    private val queueSubject = PublishSubject.create<ByteArray>()
+    private val queue = ConcurrentLinkedQueue<ByteArray>()
+
+    //发送可缓存的数据
+    val sendBuffer = queueSubject::onNext
+
     init {
         //side effect
+        onPull
+            .flatMap { pull ->
+                Observable.generate<ByteArray> { emitter ->
+                    val v = queue.poll()
+                    if (v != null) emitter.onNext(v)
+                    else emitter.onComplete()
+                }.take(pull.toLong())
+            }
+            .doOnNext(availableMessageSender::onNext)
+            .onErrorComplete()
+            .subscribe()
+        queueSubject.withLatestFrom(onAvailable,
+            { data, ok ->
+                if (ok) availableMessageSender.onNext(data)
+                else queue.add(data)
+            })
+            .takeUntil(theEnd)
+            .onErrorComplete()
+            .subscribe()
         messageSender.withLatestFrom(onAvailable,
             { data, ok ->
                 //不可发送的消息直接丢弃
                 if (ok) availableMessageSender.onNext(data)
             })
+            .takeUntil(theEnd)
             .subscribe(
                 { },
                 availableMessageSender::onError,
@@ -76,6 +103,27 @@ class Channel internal constructor(
     }
 
     //发送请求，订阅后会发送以“Request”序列化的消息(如果可以发送)
-    fun sendRequest(request: Request.Builder): Single<Responder> =
-        requester.conn.sendRequest(requester.request.flowId, request)
+    fun sendRequest(req: Request.Builder, buffer: Boolean = false): Single<Responder> {
+        val flowId = conn.newFlowId()
+        val request = req.setFlowId(flowId).build()
+        return onAvailable.take(1)
+            .flatMap { ok ->
+                val message = request.toByteArray()
+                if (ok) {
+                    //发送request
+                    availableMessageSender.onNext(message)
+                } else if (buffer) {
+//                    println("add queue")
+                    queue.add(message)
+                } else {
+                    throw ProtocolError("channel is not available")
+                }
+                conn.watchResponseFrames(flowId)
+            }
+            .take(1).singleOrError()
+            .map { frame ->
+                Responder(conn, request, frame.response)
+            }
+    }
+
 }

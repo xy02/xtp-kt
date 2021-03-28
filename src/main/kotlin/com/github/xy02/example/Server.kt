@@ -1,6 +1,9 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.*
+import com.github.xy02.xtp.Connection
+import com.github.xy02.xtp.Requester
+import com.github.xy02.xtp.Responder
+import com.github.xy02.xtp.nioServer
 import com.google.protobuf.ByteString
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Observable
@@ -26,34 +29,29 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-private fun onClientRequester(requester:Requester):Completable {
+private fun onClientRequester(requester: Requester): Completable {
     println("onClientRequester")
     //验证客户端，略
-    //准备API列表
-    val apiList = mutableListOf<API>(
-        "Acc" to ::acc
+    //API列表
+    val api = Observable.fromIterable(
+        mutableListOf<API>(
+            "Acc" to ::acc
+        )
     )
     return requester.createResponseChannel(Response.newBuilder())
-        .flatMapCompletable { channel->
-            channel.onPull.flatMap { pull ->
-                Observable.generate<API> { emitter ->
-                    if (apiList.isEmpty())
-                        return@generate emitter.onComplete()
-                    val api = apiList.removeLast()
-                    emitter.onNext(api)
-                }.take(pull.toLong())
-            }.flatMapCompletable { (type, fn) ->
-                //返回API
+        .flatMapCompletable { channel ->
+            api.flatMapCompletable { (type, fn) ->
+                //发送API
                 val req = Request.newBuilder().setType(type)
-                channel.sendRequest(req)
-//                    .flatMapCompletable { fn(it) }
+                channel.sendRequest(req, true)
+//                        .flatMapCompletable { fn(it) }
                     .flatMapCompletable(fn)
-            }.onErrorComplete()
+            }
         }
+        .onErrorComplete()
 }
 
-//累加收到的数据个数，并向下游流输出json字符串
-// {"time":"2021-03-01 10:31:59","acc":13}
+//累加收到的请求个数，响应json字符串，形如{"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(responder: Responder): Completable {
     //父流，接收的是请求
     val flow = responder.flow
@@ -84,7 +82,7 @@ private fun acc(responder: Responder): Completable {
         }
         .doOnSubscribe {
             //首次拉取
-            flow?.pull(5000)
+            flow?.pull(2000)
         }
         .ignoreElements()
 }

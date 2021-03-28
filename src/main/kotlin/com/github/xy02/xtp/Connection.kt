@@ -22,7 +22,7 @@ class Connection(
     private val pullFrames = getFramesByType(Frame.TypeCase.PULL)
     private val cancelFrames = getFramesByType(Frame.TypeCase.CANCEL)
     private val fid = AtomicInteger(1)
-    private val newFlowId = fid::getAndIncrement
+    internal val newFlowId = fid::getAndIncrement
     internal val watchMessageFrames = messageFrames.getSubValues(Frame::getFlowId)
     internal val watchResponseFrames = responseFrames.getSubValues(Frame::getFlowId)
     internal val watchEndFrames = endFrames.getSubValues(Frame::getFlowId)
@@ -43,10 +43,7 @@ class Connection(
     val onRootRequester: Single<Requester> = firstRemoteRequest.map { Requester(this, it) }.cache()
 
     //发送根请求（订阅后发送）
-    fun sendRootRequest(req: Request.Builder): Single<Responder> =
-        sendRequest(0, req)
-
-    internal fun sendRequest(parentFlowId: Int, req: Request.Builder): Single<Responder> {
+    fun sendRootRequest(req: Request.Builder): Single<Responder> {
         val flowId = newFlowId()
         val request = req.setFlowId(flowId).build()
         val theResponse = watchResponseFrames(flowId)
@@ -55,7 +52,7 @@ class Connection(
                 //发送request
                 val messageOfRequest = request.toByteString()
                 val firstFrame = Frame.newBuilder()
-                    .setFlowId(parentFlowId)
+                    .setFlowId(0)
                     .setMessage(messageOfRequest)
                 frameSender.onNext(firstFrame.build())
             }
