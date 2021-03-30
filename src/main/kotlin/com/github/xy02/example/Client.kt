@@ -1,6 +1,6 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Requester
+import com.github.xy02.xtp.Responder
 import com.github.xy02.xtp.nioClient
 import com.google.protobuf.ByteString
 import io.reactivex.rxjava3.core.Completable
@@ -28,19 +28,19 @@ fun main(args: Array<String>) {
             val req = Request.newBuilder().setType("FetchAPI")
             conn.sendRootRequest(req)
         }
-        .flatMapObservable { responder ->
-            println("onServiceResponder")
-            responder.flow?.onRequester
+        .flatMapObservable { requester ->
+            println("onServiceRequester")
+            requester.flow?.onResponder
                 ?.doOnSubscribe {
                     //接收10个API
-                    responder.flow.pull(10)
+                    requester.flow.pull(10)
                 }
                 ?: Observable.error(Exception("The service does not provide any API"))
         }
-        .flatMapCompletable { requester ->
-            println("onAPI type:${requester.type}")
-            when (requester.type) {
-                "Acc" -> crazyAcc(requester)
+        .flatMapCompletable { responder ->
+            println("onAPI type:${responder.type}")
+            when (responder.type) {
+                "Acc" -> crazyAcc(responder)
                 else -> Completable.complete()
             }
         }
@@ -51,8 +51,8 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-private fun crazyAcc(requester: Requester): Completable {
-    return requester.createResponseChannel(Response.newBuilder())
+private fun crazyAcc(responder: Responder): Completable {
+    return responder.createResponseChannel(Response.newBuilder())
         .flatMapCompletable { channel ->
             val onRes = channel.onPull.flatMap { pull ->
                 Observable.just(ByteArray(1))
@@ -61,6 +61,7 @@ private fun crazyAcc(requester: Requester): Completable {
                         val req = Request.newBuilder().setData(ByteString.copyFrom(data))
                         channel.sendRequest(req)
                     }
+                    .map { it.response }
             }
             //test
             var count = 0
@@ -74,15 +75,15 @@ private fun crazyAcc(requester: Requester): Completable {
         }
 }
 
-private fun intervalAcc(requester: Requester): Completable {
-    return requester.createResponseChannel(Response.newBuilder())
+private fun intervalAcc(responder: Responder): Completable {
+    return responder.createResponseChannel(Response.newBuilder())
         .flatMapCompletable { channel ->
             Observable.interval(1, TimeUnit.SECONDS)
                 .flatMapSingle {
                     channel.sendRequest(Request.newBuilder())
                 }
-                .doOnNext { res ->
-                    println("response: ${res.data.toStringUtf8()}")
+                .doOnNext { requester ->
+                    println("response: ${requester.response.data.toStringUtf8()}")
                 }
                 .onErrorComplete()
                 .ignoreElements()

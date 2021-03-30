@@ -39,11 +39,11 @@ class Connection(
         .doOnNext { if (it.flowId <= 0) throw ProtocolError("first flowId must greater than 0") }
         .take(1).singleOrError()
 
-    //收到对端根请求
-    val onRootRequester: Single<Requester> = firstRemoteRequest.map { Requester(this, it) }.cache()
+    //收到对端根请求时新建的响应器
+    val onRootResponder: Single<Responder> = firstRemoteRequest.map { Responder(this, it) }.cache()
 
     //发送根请求（订阅后发送）
-    fun sendRootRequest(req: Request.Builder): Single<Responder> {
+    fun sendRootRequest(req: Request.Builder): Single<Requester> {
         val flowId = newFlowId()
         val request = req.setFlowId(flowId).build()
         val theResponse = watchResponseFrames(flowId)
@@ -57,7 +57,7 @@ class Connection(
                 frameSender.onNext(firstFrame.build())
             }
             .map { frame ->
-                Responder(this, request, frame.response)
+                Requester(this, request, frame.response)
             }
             .cache()
     }

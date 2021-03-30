@@ -1,27 +1,25 @@
 package com.github.xy02.example
 
 import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.Requester
 import com.github.xy02.xtp.Responder
+import com.github.xy02.xtp.Requester
 import com.github.xy02.xtp.nioServer
 import com.google.protobuf.ByteString
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
-import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Request
 import xtp.Response
 import java.text.SimpleDateFormat
 
-typealias API = Pair<String, (Responder) -> Completable>
+private typealias API = Pair<String, (Requester) -> Completable>
 
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建TCP服务端
     nioServer()
-        .subscribeOn(Schedulers.newThread())//如果是安卓，需另起线程
-        .flatMapSingle(Connection::onRootRequester)
-        .flatMapCompletable(::onClientRequester)
+        .flatMapSingle(Connection::onRootResponder)
+        .flatMapCompletable(::onClientResponder)
         .subscribe(
             { println("complete") },
             { err -> err.printStackTrace() },
@@ -29,16 +27,16 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-private fun onClientRequester(requester: Requester): Completable {
-    println("onClientRequester")
+private fun onClientResponder(responder: Responder): Completable {
+    println("onClientResponder")
     //验证客户端，略
     //API列表
     val api = Observable.fromIterable(
-        mutableListOf<API>(
+        listOf<API>(
             "Acc" to ::acc
         )
     )
-    return requester.createResponseChannel(Response.newBuilder())
+    return responder.createResponseChannel(Response.newBuilder())
         .flatMapCompletable { channel ->
             api.flatMapCompletable { (type, fn) ->
                 //发送API
@@ -52,16 +50,17 @@ private fun onClientRequester(requester: Requester): Completable {
 }
 
 //累加收到的请求个数，响应json字符串，形如{"time":"2021-03-01 10:31:59","acc":13}
-private fun acc(responder: Responder): Completable {
-    //父流，接收的是请求
-    val flow = responder.flow
-    val onRequester = flow?.onRequester ?: Observable.empty()
+private fun acc(requester: Requester): Completable {
+    //消息流，接收的是“请求”消息
+    val flow = requester.flow
+    //“请求”消息的响应器
+    val onResponder = flow?.onResponder ?: Observable.empty()
     val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-    //处理请求消息（未向父流拉取数据时不会收到消息）
-    return onRequester
+    //处理“请求”消息（未向消息流拉取数据时不会收到消息）
+    return onResponder
         .map { Pair(it, 1) }
-        .scan { (_, acc), (req, n) -> Pair(req, acc + n) }
-        .map { (req, acc) ->
+        .scan { (_, acc), (responder, n) -> Pair(responder, acc + n) }
+        .map { (responder, acc) ->
             val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
             val bytes = json.toByteArray()
 //                val json = io.vertx.core.json.JsonObject()
@@ -71,13 +70,13 @@ private fun acc(responder: Responder): Completable {
 //                val bb = java.nio.ByteBuffer.allocate(4)
 //                bb.putInt(acc)
 //                bb.array()
-            Pair(req, bytes)
+            Pair(responder, bytes)
         }
-        .doOnNext { (req, bytes) ->
+        .doOnNext { (responder, bytes) ->
             //应答
             val res = Response.newBuilder().setData(ByteString.copyFrom(bytes)).build()
-            req.reply(res)
-            //拉取
+            responder.reply(res)
+            //拉取“请求”消息
             flow?.pull(1)
         }
         .doOnSubscribe {

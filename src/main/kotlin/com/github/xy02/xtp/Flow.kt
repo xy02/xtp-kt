@@ -7,13 +7,13 @@ import xtp.Error
 import xtp.Frame
 import xtp.Request
 
-//消息流
+//响应的消息流
 class Flow internal constructor(
-    //隶属的响应者
-    private val responder: Responder,
+    //隶属的请求器
+    private val requester: Requester,
 ) {
-    private val flowId = responder.request.flowId
-    private val conn = responder.conn
+    private val flowId = requester.request.flowId
+    private val conn = requester.conn
     private val frameSender = conn.frameSender
     private val theEnd = conn.watchEndFrames(flowId)
         .take(1)
@@ -46,15 +46,15 @@ class Flow internal constructor(
         .map { builder -> builder.setFlowId(flowId).build() }
         .doOnNext { frameSender.onNext(it) }
 
-    //接收到"Request"消息
-    val onRequester: Observable<Requester> = onMessage.map(Request::parseFrom)
+    //接收到"Request"消息时新建的响应器
+    val onResponder: Observable<Responder> = onMessage.map(Request::parseFrom)
         .doOnNext { req ->
             if (req.flowId <= 0)
                 throw ProtocolError("Request.flowId must greater than 0")
 //            if (req.type.isNullOrEmpty())
 //                throw ProtocolError("Request.type can not be empty")
         }
-        .map { Requester(responder.conn, it) }
+        .map { Responder(requester.conn, it) }
         .share()
 
     init {

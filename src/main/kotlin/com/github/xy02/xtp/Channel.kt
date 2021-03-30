@@ -9,13 +9,13 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 //流消息的发送通道
 class Channel internal constructor(
-    //隶属的请求者
-    val requester: Requester,
+    //隶属的响应器
+    val responder: Responder,
     //发送的响应
     val response: Response,
 ) {
-    val flowId = requester.request.flowId
-    private val conn = requester.conn
+    val flowId = responder.request.flowId
+    private val conn = responder.conn
     private val availableMessageSender = PublishSubject.create<ByteArray>()
     private val remoteCancel = conn.watchCancelFrames(flowId)
         .take(1)
@@ -103,7 +103,7 @@ class Channel internal constructor(
     }
 
     //发送请求，订阅后会发送以“Request”序列化的消息(如果可以发送)
-    fun sendRequest(req: Request.Builder, buffer: Boolean = false): Single<Responder> {
+    fun sendRequest(req: Request.Builder, buffer: Boolean = false): Single<Requester> {
         val flowId = conn.newFlowId()
         val request = req.setFlowId(flowId).build()
         return onAvailable.take(1)
@@ -122,7 +122,7 @@ class Channel internal constructor(
             }
             .take(1).singleOrError()
             .map { frame ->
-                Responder(conn, request, frame.response)
+                Requester(conn, request, frame.response)
             }
     }
 
