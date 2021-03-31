@@ -40,7 +40,7 @@ private fun onClientResponder(responder: Responder): Completable {
         .flatMapCompletable { channel ->
             api.flatMapCompletable { (type, fn) ->
                 //发送API
-                val req = Request.newBuilder().setType(type)
+                val req = Request.newBuilder().setDataClass(type)
                 channel.sendRequest(req, true)
 //                        .flatMapCompletable { fn(it) }
                     .flatMapCompletable(fn)

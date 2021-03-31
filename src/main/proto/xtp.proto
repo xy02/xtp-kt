@@ -5,7 +5,7 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.9
+    协议版本：0.10
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
@@ -56,8 +56,8 @@ message Frame {
 message Request {
     //流标识，必须大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
     int32 flow_id = 1;
-    //类型（可空），例："ListUserApi","GetFile"
-    string type = 2;
+    //数据类名（可空），例："ListUserApi","GetFile"
+    string data_class = 2;
     //数据（可空）,可包含订阅者身份等数据
     bytes data = 3;
     //待扩展，指定压缩算法、序列化器等
@@ -74,13 +74,15 @@ message Response {
     }
     //数据（可空），任意数据
     bytes data = 3;
+    //数据类名（可空），例："UserApi","ByteArray"
+    string data_class = 4;
 }
 
 //流头
 message Header {
-    //流消息类型（可空），例："xtp.Request","Record","Bytes"
+    //流消息类名（可空），例："xtp.Request","Record","Bytes"
     //流消息可以是一个新的请求
-    string message_type = 4;
+    string message_class = 4;
     //待扩展，描述流的元数据
 }
 
@@ -92,8 +94,8 @@ message End {
 
 //错误
 message Error {
-    //错误类型
-    string type = 1;
+    //错误类名
+    string class_name = 1;
     //错误消息（可空）
     string str_message = 2;
 }

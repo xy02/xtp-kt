@@ -1,7 +1,7 @@
 package com.github.xy02.xtp
 
 class RemoteError(
-    val type: String,
+    val className: String,
     override val message: String,
 ) : Throwable()
 

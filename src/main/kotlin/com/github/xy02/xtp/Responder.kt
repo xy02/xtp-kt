@@ -12,7 +12,6 @@ class Responder internal constructor(
     //收到的请求
     val request: Request,
 ) {
-    val type: String = request.type
     private val singleResponse = SingleSubject.create<Response>()
     private val maybeChannel = singleResponse.flatMapMaybe { res ->
         if (res.hasHeader())
@@ -39,7 +38,7 @@ class Responder internal constructor(
     fun replyError(e: Throwable) {
         val response = Response.newBuilder().setEnd(
             End.newBuilder().setError(
-                Error.newBuilder().setType(e.javaClass.name)
+                Error.newBuilder().setClassName(e.javaClass.name)
                     .setStrMessage(e.message ?: "")
             )
         ).build()

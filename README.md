@@ -19,8 +19,8 @@ repositories {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.0.11"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
-    implementation 'com.gitee.xy02:xtp-kt:0.12.0'
-    //implementation 'com.github.xy02:xtp-kt:0.12.0'
+    implementation 'com.gitee.xy02:xtp-kt:0.13.0'
+    //implementation 'com.github.xy02:xtp-kt:0.13.0'
 }
 ```
 
@@ -55,7 +55,7 @@ private fun onClientResponder(responder: Responder): Completable {
         .flatMapCompletable { channel ->
             api.flatMapCompletable { (type, fn) ->
                 //发送API
-                val req = Request.newBuilder().setType(type)
+                val req = Request.newBuilder().setDataClass(type)
                 channel.sendRequest(req, true)
 //                        .flatMapCompletable { fn(it) }
                     .flatMapCompletable(fn)

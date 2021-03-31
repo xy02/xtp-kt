@@ -21,14 +21,14 @@ class Channel internal constructor(
         .take(1)
         .doOnNext { frame ->
             val e = frame.cancel
-            throw RemoteError(e.type, e.strMessage)
+            throw RemoteError(e.className, e.strMessage)
         }
     private val sentItemsWithNoError = availableMessageSender
         .takeUntil(remoteCancel)
         .map { message -> Frame.newBuilder().setMessage(ByteString.copyFrom(message)) }
         .concatWith(Single.just(Frame.newBuilder().setEnd(End.getDefaultInstance())))
         .onErrorReturn { e ->
-            val error = Error.newBuilder().setType(e.javaClass.name).setStrMessage(e.message ?: "")
+            val error = Error.newBuilder().setClassName(e.javaClass.name).setStrMessage(e.message ?: "")
             val end = End.newBuilder().setError(error)
             Frame.newBuilder().setEnd(end)
         }

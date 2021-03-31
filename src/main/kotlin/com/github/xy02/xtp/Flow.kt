@@ -20,7 +20,7 @@ class Flow internal constructor(
         .doOnNext { frame ->
             val end = frame.end
             if (end.hasError())
-                throw RemoteError(end.error.type ?: "", end.error.strMessage ?: "")
+                throw RemoteError(end.error.className ?: "", end.error.strMessage ?: "")
         }
 
     //流消息的拉取器
@@ -37,10 +37,10 @@ class Flow internal constructor(
         .map { pull -> Frame.newBuilder().setPull(pull) }
         .doOnComplete { throw Exception("cancel") }
         .onErrorReturn { err ->
-            val type = err.javaClass.name
+            val name = err.javaClass.name
             val message = err.message ?: ""
             Frame.newBuilder().setCancel(
-                Error.newBuilder().setType(type).setStrMessage(message)
+                Error.newBuilder().setClassName(name).setStrMessage(message)
             )
         }
         .map { builder -> builder.setFlowId(flowId).build() }

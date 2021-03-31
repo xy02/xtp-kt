@@ -25,7 +25,7 @@ fun main(args: Array<String>) {
         .flatMap { conn ->
             println("onConnection")
             //向服务器获取API，可以带上身份信息等数据
-            val req = Request.newBuilder().setType("FetchAPI")
+            val req = Request.newBuilder().setDataClass("FetchAPI")
             conn.sendRootRequest(req)
         }
         .flatMapObservable { requester ->
@@ -38,8 +38,8 @@ fun main(args: Array<String>) {
                 ?: Observable.error(Exception("The service does not provide any API"))
         }
         .flatMapCompletable { responder ->
-            println("onAPI type:${responder.type}")
-            when (responder.type) {
+            println("onAPI type:${responder.request.dataClass}")
+            when (responder.request.dataClass) {
                 "Acc" -> crazyAcc(responder)
                 else -> Completable.complete()
             }
