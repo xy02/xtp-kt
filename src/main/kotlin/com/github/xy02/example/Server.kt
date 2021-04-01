@@ -9,7 +9,7 @@ import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import xtp.Request
-import xtp.Response
+import xtp.Success
 import java.text.SimpleDateFormat
 
 private typealias API = Pair<String, (Requester) -> Completable>
@@ -36,7 +36,7 @@ private fun onClientResponder(responder: Responder): Completable {
             "Acc" to ::acc
         )
     )
-    return responder.createResponseChannel(Response.newBuilder())
+    return responder.createResponseChannel(Success.newBuilder())
         .flatMapCompletable { channel ->
             api.flatMapCompletable { (type, fn) ->
                 //发送API
@@ -74,8 +74,8 @@ private fun acc(requester: Requester): Completable {
         }
         .doOnNext { (responder, bytes) ->
             //应答
-            val res = Response.newBuilder().setData(ByteString.copyFrom(bytes)).build()
-            responder.reply(res)
+            val success = Success.newBuilder().setData(ByteString.copyFrom(bytes))
+            responder.replySuccess(success)
             //拉取“请求”消息
             flow?.pull(1)
         }

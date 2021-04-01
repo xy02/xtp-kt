@@ -13,5 +13,5 @@ class Requester internal constructor(
     val response: Response,
 ) {
     //收到的消息流
-    val flow: Flow? = if (response.hasHeader()) Flow(this) else null
+    val flow: Flow? = if (response.success.hasHeader()) Flow(this) else null
 }

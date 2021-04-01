@@ -14,7 +14,7 @@ class Responder internal constructor(
 ) {
     private val singleResponse = SingleSubject.create<Response>()
     private val maybeChannel = singleResponse.flatMapMaybe { res ->
-        if (res.hasHeader())
+        if (res.hasSuccess() && res.success.hasHeader())
             Maybe.just(Channel(this, res))
         else Maybe.empty()
     }
@@ -36,22 +36,31 @@ class Responder internal constructor(
 
     //响应错误
     fun replyError(e: Throwable) {
-        val response = Response.newBuilder().setEnd(
-            End.newBuilder().setError(
-                Error.newBuilder().setClassName(e.javaClass.name)
-                    .setStrMessage(e.message ?: "")
-            )
+        val response = Response.newBuilder().setError(
+            Error.newBuilder()
+                .setClassName(e.javaClass.name)
+                .setStrMessage(e.message ?: "")
         ).build()
         reply(response)
     }
 
+    //响应成功，无流头信息
+    fun replySuccess(success: Success.Builder) {
+        if (success.hasHeader())
+            success.clearHeader()
+        val response = Response.newBuilder().setSuccess(success).build()
+        reply(response)
+    }
+
     //创建响应通道用于发送流消息，订阅后发送response
-    fun createResponseChannel(response: Response.Builder): Single<Channel> {
+    fun createResponseChannel(success: Success.Builder): Single<Channel> {
         if (singleResponse.hasValue())
             return Single.error(ProtocolError("one request, one response"))
-        if (!response.hasHeader())
-            response.header = Header.getDefaultInstance()
-        singleResponse.onSuccess(response.build())
+        if (!success.hasHeader())
+            success.header = Header.getDefaultInstance()
+        val response = Response.newBuilder().setSuccess(success).build()
+        singleResponse.onSuccess(response)
         return maybeChannel.toSingle()
     }
+
 }

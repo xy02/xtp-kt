@@ -8,7 +8,7 @@ import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import xtp.Request
-import xtp.Response
+import xtp.Success
 import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
@@ -52,7 +52,7 @@ fun main(args: Array<String>) {
 }
 
 private fun crazyAcc(responder: Responder): Completable {
-    return responder.createResponseChannel(Response.newBuilder())
+    return responder.createResponseChannel(Success.newBuilder())
         .flatMapCompletable { channel ->
             val onRes = channel.onPull.flatMap { pull ->
                 Observable.just(ByteArray(1))
@@ -76,14 +76,14 @@ private fun crazyAcc(responder: Responder): Completable {
 }
 
 private fun intervalAcc(responder: Responder): Completable {
-    return responder.createResponseChannel(Response.newBuilder())
+    return responder.createResponseChannel(Success.newBuilder())
         .flatMapCompletable { channel ->
             Observable.interval(1, TimeUnit.SECONDS)
                 .flatMapSingle {
                     channel.sendRequest(Request.newBuilder())
                 }
                 .doOnNext { requester ->
-                    println("response: ${requester.response.data.toStringUtf8()}")
+                    println("response: ${requester.response.success.data.toStringUtf8()}")
                 }
                 .onErrorComplete()
                 .ignoreElements()

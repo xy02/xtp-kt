@@ -5,14 +5,14 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.10
+    协议版本：0.11
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
     定义一条“流”包含一个“本端”的“请求器”和一个“对端”的“响应器”，
     以“请求器”发送Frame.message（以Request序列化）开始“流”的生命周期，然后“响应器”发送Response响应，
-    若Response.has_messages为false(或空值)则“流”的生命周期结束，否则以“响应器”发送Frame.end结束生命周期，
-    当其为true时，“请求器”可发送多次“拉取量”Frame.pull以期望得到“响应器”多次发送的有序的“流消息”Frame.message，
+    若响应错误或响应成功里无“流头”信息（Success.header为空）则“流”的生命周期结束，否则以“响应器”发送Frame.end结束生命周期，
+    当有流头时，“请求器”可发送多次“拉取量”Frame.pull以期望得到“响应器”多次发送的有序的“流消息”Frame.message，
     “响应器”发送的“流消息”的总数必须小于等于“请求器”发送的“拉取量(Frame.pull)”总和。
 
     流生命周期举例：
@@ -65,17 +65,24 @@ message Request {
 
 //流的响应
 message Response {
-    //类型（可空），为空表示流结束
+    //类型（可空），默认成功
     oneof type {
-        //流结束，表示无后续流消息
-        End end = 1;
-        //流头，表示有后续流消息
-        Header header = 2;
+        //成功
+        Success success = 1;
+        //错误
+        Error error = 2;
     }
+}
+
+//响应成功
+message Success {
+    //数据类名（可空），例："UserApi","ByteArray","xtp.Request"
+    //数据可以是一个新的请求
+    string data_class = 1;
     //数据（可空），任意数据
-    bytes data = 3;
-    //数据类名（可空），例："UserApi","ByteArray"
-    string data_class = 4;
+    bytes data = 2;
+    //流头（可空），为空时表示无后续流消息（流的命周期结束）
+    Header header = 3;
 }
 
 //流头
@@ -86,7 +93,7 @@ message Header {
     //待扩展，描述流的元数据
 }
 
-//结束
+//结束，表示响应流的命周期结束
 message End {
     //错误（可空），空时表示流成功结束
     Error error = 1;
