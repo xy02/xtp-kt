@@ -19,8 +19,8 @@ repositories {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.0.11"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
-    implementation 'com.gitee.xy02:xtp-kt:0.13.0'
-    //implementation 'com.github.xy02:xtp-kt:0.13.0'
+    implementation 'com.gitee.xy02:xtp-kt:0.14.1'
+    //implementation 'com.github.xy02:xtp-kt:0.14.1'
 }
 ```
 
@@ -51,7 +51,7 @@ private fun onClientResponder(responder: Responder): Completable {
             "Acc" to ::acc
         )
     )
-    return responder.createResponseChannel(Response.newBuilder())
+    return responder.createResponseChannel(Success.newBuilder())
         .flatMapCompletable { channel ->
             api.flatMapCompletable { (type, fn) ->
                 //发送API
@@ -82,8 +82,8 @@ private fun acc(requester: Requester): Completable {
         }
         .doOnNext { (responder, bytes) ->
             //应答
-            val res = Response.newBuilder().setData(ByteString.copyFrom(bytes)).build()
-            responder.reply(res)
+            val success = Success.newBuilder().setData(ByteString.copyFrom(bytes))
+            responder.replySuccess(success)
             //拉取“请求”消息
             flow?.pull(1)
         }

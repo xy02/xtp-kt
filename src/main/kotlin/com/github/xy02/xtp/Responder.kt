@@ -32,7 +32,11 @@ class Responder internal constructor(
     }
 
     //响应
-    fun reply(response: Response) = singleResponse.onSuccess(response)
+    fun reply(response: Response) {
+        if (singleResponse.hasValue())
+            throw ProtocolError("one request, one response")
+        singleResponse.onSuccess(response)
+    }
 
     //响应错误
     fun replyError(e: Throwable) {
@@ -50,6 +54,25 @@ class Responder internal constructor(
             success.clearHeader()
         val response = Response.newBuilder().setSuccess(success).build()
         reply(response)
+    }
+
+    //响应请求
+    fun replyRequest(req: Request.Builder): Single<Requester> {
+        val flowId = conn.newFlowId()
+        val request = req.setFlowId(flowId).build()
+        val theResponse = conn.watchResponseFrames(flowId)
+        return theResponse.take(1).singleOrError()
+            .doOnSubscribe {
+                //发送request
+                val success = Success.newBuilder()
+                    .setDataClass(Request::javaClass.name)
+                    .setData(request.toByteString())
+                replySuccess(success)
+            }
+            .map { frame ->
+                Requester(conn, request, frame.response)
+            }
+            .cache()
     }
 
     //创建响应通道用于发送流消息，订阅后发送response
