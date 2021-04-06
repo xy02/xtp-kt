@@ -5,8 +5,8 @@ import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.subjects.SingleSubject
 import xtp.*
 
-//流的响应者
-class Responder internal constructor(
+//流的供应者
+class Provider internal constructor(
     //隶属连接
     val conn: Connection,
     //收到的请求
@@ -57,7 +57,7 @@ class Responder internal constructor(
     }
 
     //响应请求
-    fun replyRequest(req: Request.Builder): Single<Requester> {
+    fun replyRequest(req: Request.Builder): Single<Consumer> {
         val flowId = conn.newFlowId()
         val request = req.setFlowId(flowId).build()
         val theResponse = conn.watchResponseFrames(flowId)
@@ -70,7 +70,7 @@ class Responder internal constructor(
                 replySuccess(success)
             }
             .map { frame ->
-                Requester(conn, request, frame.response)
+                Consumer(conn, request, frame.response)
             }
             .cache()
     }

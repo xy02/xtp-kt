@@ -154,7 +154,7 @@ fun nioClient(
 
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Connection {
-    val sender = PublishSubject.create<Frame>()
+    val sender = PublishSubject.create<Frame>().toSerialized()
     val frames = Observable
         .create<ByteArray> { emitter1 ->
             sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))

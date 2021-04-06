@@ -4,8 +4,8 @@ import io.reactivex.rxjava3.core.Maybe
 import xtp.Request
 import xtp.Response
 
-//流的请求者
-class Requester internal constructor(
+//流的消费者
+class Consumer internal constructor(
     //隶属连接
     val conn: Connection,
     //发送的请求
@@ -16,16 +16,16 @@ class Requester internal constructor(
     //收到的消息流
     val flow: Flow? = if (response.success.hasHeader()) Flow(this) else null
 
-    //新的响应器，收到的应答可能是新请求
-    val maybeNewResponder = Maybe.create<Responder> { emitter ->
+    //新的供应者，收到的应答可能是新请求
+    val maybeNewProvider = Maybe.create<Provider> { emitter ->
         if (response.hasError())
             return@create emitter.onComplete()
         try {
             val req = Request.parseFrom(response.success.data)
             if (req.flowId <= 0)
                 return@create emitter.onComplete()
-            val responder = Responder(conn, req)
-            emitter.onSuccess(responder)
+            val provider = Provider(conn, req)
+            emitter.onSuccess(provider)
         } catch (e: Exception) {
             emitter.onComplete()
         }

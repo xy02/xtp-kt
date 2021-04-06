@@ -40,10 +40,10 @@ class Connection(
         .take(1).singleOrError()
 
     //收到对端根请求时新建的响应器
-    val onRootResponder: Single<Responder> = firstRemoteRequest.map { Responder(this, it) }.cache()
+    val onRootProvider: Single<Provider> = firstRemoteRequest.map { Provider(this, it) }.cache()
 
     //发送根请求（订阅后发送）
-    fun sendRootRequest(req: Request.Builder): Single<Requester> {
+    fun sendRootRequest(req: Request.Builder): Single<Consumer> {
         val flowId = newFlowId()
         val request = req.setFlowId(flowId).build()
         val theResponse = watchResponseFrames(flowId)
@@ -57,7 +57,7 @@ class Connection(
                 frameSender.onNext(firstFrame.build())
             }
             .map { frame ->
-                Requester(this, request, frame.response)
+                Consumer(this, request, frame.response)
             }
             .cache()
     }
