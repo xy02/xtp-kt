@@ -1,68 +1,75 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Connection
-import com.github.xy02.xtp.Provider
-import com.github.xy02.xtp.Consumer
+import com.github.xy02.xtp.Channel
+import com.github.xy02.xtp.Flow
+import com.github.xy02.xtp.PipeSetup
 import com.github.xy02.xtp.nioServer
-import com.google.protobuf.ByteString
 import io.reactivex.rxjava3.core.Completable
-import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
-import xtp.Request
-import xtp.Success
+import xtp.Header
 import java.text.SimpleDateFormat
-
-private typealias API = Pair<String, (Consumer) -> Completable>
 
 fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建TCP服务端
     nioServer()
-        .flatMapSingle(Connection::onRootProvider)
-        .flatMapCompletable(::onClientProvider)
+        .flatMapSingle { conn ->
+            println("onConnection")
+            conn.singleRootFlow
+        }
+        .flatMapCompletable(::handleClientInfo)
         .subscribe(
-            { println("complete") },
+            { },
             { err -> err.printStackTrace() },
         )
     readLine()
 }
 
-private fun onClientProvider(provider: Provider): Completable {
-    println("onClientProvider")
-    //验证客户端，略
-    //API列表
-    val api = Observable.fromIterable(
-        listOf<API>(
-            "Acc" to ::acc
-        )
-    )
-    return provider.createResponseChannel(Success.newBuilder())
-        .flatMapCompletable { channel ->
-            api.flatMapCompletable { (type, fn) ->
-                //发送API
-                val req = Request.newBuilder().setDataClass(type)
-                channel.sendRequest(req, true)
-//                        .flatMapCompletable { fn(it) }
-                    .flatMapCompletable(fn)
-            }
+fun handleClientInfo(rootFlow: Flow): Completable {
+    println("handleClientInfo")
+    //验证收到的header.info，略
+    val conn = rootFlow.conn
+    //发送根流头
+    val header = Header.newBuilder().setInfoType("ServiceInfo")
+    return conn.sendRootHeader(header)
+        .flatMapCompletable { rootChannel ->
+            service(rootFlow, rootChannel)
         }
         .onErrorComplete()
 }
 
+fun service(rootFlow: Flow, rootChannel: Channel): Completable {
+    println("onService")
+    return rootFlow.onChildFlow
+        .doOnSubscribe {
+            //拉取“流”
+            rootChannel.onPull.subscribe(rootFlow.messagePuller)
+        }
+        .flatMapCompletable { flow ->
+            when (flow.header.infoType) {
+                "Acc" -> acc(flow, rootChannel)
+                else -> Completable.complete()
+            }
+        }
+}
+
 //累加收到的请求个数，响应json字符串，形如{"time":"2021-03-01 10:31:59","acc":13}
-private fun acc(consumer: Consumer): Completable {
-    //消息流，接收的是“请求”消息
-    val flow = consumer.flow
-    //“请求”消息的响应器
-    val onProvider = flow?.onProvider ?: Observable.empty()
-    val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-    //处理“请求”消息（未向消息流拉取数据时不会收到消息）
-    return onProvider
-        .map { Pair(it, 1) }
-        .scan { (_, acc), (provider, n) -> Pair(provider, acc + n) }
-        .map { (provider, acc) ->
-            val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
-            val bytes = json.toByteArray()
+private fun acc(flow: Flow, rootChannel: Channel): Completable {
+    //处理新流，验证header.info等
+    println("onHeader:${flow.header}")
+    //创建下游流
+    return rootChannel
+        .sendHeader(
+            Header.newBuilder().setInfoType("AccReply")
+        )
+        .flatMapCompletable { accReplyChannel ->
+            //处理上游发来的数据（未向上游拉取数据时是不会收到数据的）
+            val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+            val handledMessage = flow.onMessage
+                .scan(0) { acc, _ -> acc + 1 }
+                .map { acc ->
+                    val json = """{"time":${df.format(System.currentTimeMillis())},"acc":$acc}"""
+                    json.toByteArray()
 //                val json = io.vertx.core.json.JsonObject()
 //                    .put("time", df.format(System.currentTimeMillis()))
 //                    .put("acc", acc)
@@ -70,18 +77,15 @@ private fun acc(consumer: Consumer): Completable {
 //                val bb = java.nio.ByteBuffer.allocate(4)
 //                bb.putInt(acc)
 //                bb.array()
-            Pair(provider, bytes)
+                }
+            //向下游输出处理过的消息
+            handledMessage.subscribe(accReplyChannel.messageSender)
+            //自动流量控制
+            flow.pipeChannels(
+                //可以有多个下游管道
+                mapOf(accReplyChannel to PipeSetup())
+            )
+//            //让拉取上游数据的速度与下游流的拉取速度相同
+//            accReplyChannel.onPull.subscribe(flow.messagePuller)
         }
-        .doOnNext { (provider, bytes) ->
-            //应答
-            val success = Success.newBuilder().setData(ByteString.copyFrom(bytes))
-            provider.replySuccess(success)
-            //拉取“请求”消息
-            flow?.pull(1)
-        }
-        .doOnSubscribe {
-            //首次拉取
-            flow?.pull(2000)
-        }
-        .ignoreElements()
 }

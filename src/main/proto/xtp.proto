@@ -5,95 +5,63 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.11
+    协议版本：0.12
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
-    定义一条“流”包含一个“本端”的“消费者”和一个“对端”的“供应者”，
-    以“消费者”发送Frame.message（以Request序列化）开始“流”的生命周期，然后“供应者”发送Response响应，
-    若响应错误或响应成功里无“流头”信息（Success.header为空）则“流”的生命周期结束，否则以“供应者”发送Frame.end结束生命周期，
-    当有流头时，“消费者”可发送多次“拉取量”Frame.pull以期望得到“供应者”多次发送的有序的“流消息”Frame.message，
-    “供应者”发送的“流消息”的总数必须小于等于“消费者”发送的“拉取量(Frame.pull)”总和。
+    定义一条“流”包含一个“本端”的“生产者”和一个“对端”的“消费者”，
+    以“生产者”发送Frame.message（以Header序列化）开始“流”的生命周期，
+    以“生产者”发送一个Frame.end或以“消费者”发送一个Frame.cancel结束生命周期，
+    生命周期未结束时，“消费者”可发送多次“拉取量”Frame.pull以期望得到“生产者”多次发送的有序的“流消息”Frame.message，
+    “生产者”发送的“流消息”的总数必须小于等于“消费者”发送的“拉取量(Frame.pull)”总和。
 
     流生命周期举例：
     例一：
-    message(Request)->
-    <-response
+    message(Header)->
+    <-pull
+    message->
+    message->
+    <-pull
+    message->
+    end->
 
-    例二：
-    message(Request)->
-    <-response{has_messages=true}
-    pull->
-    <-message
-    <-message
-    pull->
-    <-message
-    <-end
+    例二:
+    message(Header)->
+    <-cancel
  */
 package xtp;
 
 //数据帧，连接上的基础数据载体
 message Frame {
-    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message（以Request序列化）
+    //流ID，表示此数据帧属于哪条流，0表示连接，0流只允许接收一个message（以Header序列化）
     int32 flow_id = 1;
     oneof type {
-        //流的消息，表示发送端（供应者）发送了一个流消息
-        //发送的消息的总数必须小于等于“拉取量(Frame.request)”的总和
+        //流的消息，表示发送端（生产者）发送了一个流消息
+        //发送的消息的总数必须小于等于“拉取量(Frame.pull)”的总和
         bytes message = 2;
-        //流的响应，表示发送端（供应者）响应请求，若其中has_messages为true表示有后续流消息（使用pull拉取）
-        Response response = 3;
-        //流的结束，表示发送端（供应者）结束发送流消息，流的命周期结束
-        End end = 4;
+        //流的结束，表示发送端（生产者）结束发送流消息，流的命周期结束
+        End end = 3;
         //拉取量，表示发送端（消费者）的可接收消息数的增量，大于0，用于“流消息”的流量控制
         //与ReactiveStream里的request语义相同
-        int32 pull = 5;
+        int32 pull = 4;
         //取消流的原因，表示发送端（消费者）取消接收流消息，等待对端发送end后流的生命周期结束
-        Error cancel = 6;
+        Error cancel = 5;
     }
 }
 
-//流的请求，表示发送端请求“对端”响应
-message Request {
+//流头，表示发送端请求创建一条新流
+message Header {
     //流标识，必须大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
     int32 flow_id = 1;
-    //数据类名（可空），例："ListUserApi","GetFile"
-    string data_class = 2;
-    //数据（可空）,可包含订阅者身份等数据
-    bytes data = 3;
-    //待扩展，指定压缩算法、序列化器等
+    //信息类型，用于区分不同类型的流的处理方法
+    string info_type = 2;
+    //信息（可空），任意数据
+    bytes info = 3;
+    //消息类型（可空），例："xtp.Header","client.Request","service.Reply"
+    string message_type = 4;
 }
 
-//流的响应
-message Response {
-    //类型（可空），默认成功
-    oneof type {
-        //成功
-        Success success = 1;
-        //错误
-        Error error = 2;
-    }
-}
-
-//响应成功
-message Success {
-    //数据类名（可空），例："UserApi","ByteArray","xtp.Request"
-    //数据可以是一个新的请求
-    string data_class = 1;
-    //数据（可空），任意数据
-    bytes data = 2;
-    //流头（可空），为空时表示无后续流消息（流的命周期结束）
-    Header header = 3;
-}
-
-//流头
-message Header {
-    //流消息类名（可空），例："xtp.Request","Record","Bytes"
-    //流消息可以是一个新的请求
-    string message_class = 4;
-    //待扩展，描述流的元数据
-}
-
-//结束，表示响应流的命周期结束
+//结束，流的生命周期结束
 message End {
     //错误（可空），空时表示流成功结束
     Error error = 1;
@@ -102,7 +70,7 @@ message End {
 //错误
 message Error {
     //错误类名
-    string class_name = 1;
+    string type_name = 1;
     //错误消息（可空）
     string str_message = 2;
 }

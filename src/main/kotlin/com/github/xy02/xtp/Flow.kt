@@ -1,60 +1,86 @@
 package com.github.xy02.xtp
 
+import io.reactivex.rxjava3.core.Completable
+import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.PublishSubject
 import xtp.Error
 import xtp.Frame
-import xtp.Request
+import xtp.Header
+
+//通道与向此通道发送的消息流的映射关系
+typealias PipeMap = Map<Channel, PipeSetup>
+//pipe配置
+class PipeSetup(
+    //忽略的消息，会用于向上游的pull计数
+    //收到的上游“流消息”与向下游发送的“已处理消息”必须1对1数量相等
+    //“已处理消息”包括向下游发送的消息和忽略的消息
+    val onIgnoredMessage: Observable<Int> = Observable.empty(),
+)
 
 //响应的消息流
 class Flow internal constructor(
-    //隶属的请求器
-    private val consumer: Consumer,
+    //连接
+    val conn: Connection,
+    //收到的流头
+    val header: Header,
+    //父流
+    val parentFlow: Flow? = null,
 ) {
-    private val flowId = consumer.request.flowId
-    private val conn = consumer.conn
+    private val flowId = header.flowId
     private val frameSender = conn.frameSender
+    //流消息的拉取器
+    val messagePuller = PublishSubject.create<Int>().toSerialized()
+
     private val theEnd = conn.watchEndFrames(flowId)
         .take(1)
+        .takeUntil(messagePuller.ignoreElements().toObservable<Unit>())
         .doOnNext { frame ->
             val end = frame.end
             if (end.hasError())
-                throw RemoteError(end.error.className ?: "", end.error.strMessage ?: "")
+                throw RemoteError(end.error.typeName ?: "", end.error.strMessage ?: "")
         }
-
-    //流消息的拉取器
-    val messagePuller = PublishSubject.create<Int>().toSerialized()
 
     //收到流消息
     val onMessage = conn.watchMessageFrames(flowId)
         .map { frame -> frame.message.toByteArray() }
         .takeUntil(theEnd)
-        .takeUntil(messagePuller.ignoreElements().toObservable<Any>())
         .share()
-    private val onPullIncrement = getPullIncrements(onMessage, messagePuller)
-    private val onPullFrame = onPullIncrement
-        .map { pull -> Frame.newBuilder().setPull(pull) }
+    private val onPull = messagePuller
         .doOnComplete { throw Exception("cancel") }
-        .onErrorReturn { err ->
+        .doOnError { err ->
             val name = err.javaClass.name
             val message = err.message ?: ""
-            Frame.newBuilder().setCancel(
-                Error.newBuilder().setClassName(name).setStrMessage(message)
-            )
+            val frame = Frame.newBuilder().setCancel(
+                Error.newBuilder().setTypeName(name).setStrMessage(message)
+            ).setFlowId(flowId).build()
+            frameSender.onNext(frame)
         }
-        .map { builder -> builder.setFlowId(flowId).build() }
+        .takeUntil(theEnd)
+    private val onPullIncrement = getPullIncrements(onMessage, onPull)
+    private val onPullFrame = onPullIncrement
+        .map { pull -> Frame.newBuilder().setPull(pull).setFlowId(flowId).build() }
         .doOnNext { frameSender.onNext(it) }
+        .onErrorComplete()
 
-    //接收到"Request"消息时新建的响应器
-    val onProvider: Observable<Provider> = onMessage.map(Request::parseFrom)
-        .doOnNext { req ->
-            if (req.flowId <= 0)
-                throw ProtocolError("Request.flowId must greater than 0")
-//            if (req.type.isNullOrEmpty())
-//                throw ProtocolError("Request.type can not be empty")
+    //接收到子流
+    val onChildFlow: Observable<Flow> = onMessage
+        .flatMapMaybe {
+            try {
+                val header = Header.parseFrom(it)
+                if (header.flowId <= 0)
+                    throw ProtocolError("Header.flowId must greater than 0")
+                if (header.infoType.isNullOrEmpty())
+                    throw ProtocolError("Header.infoType can not be empty")
+                Maybe.just(header)
+            } catch (e: Exception) {
+                //发送cancel
+                messagePuller.onError(e)
+                Maybe.empty()
+            }
         }
-        .map { Provider(consumer.conn, it) }
+        .map { Flow(conn, it, this) }
         .share()
 
     init {
@@ -64,6 +90,41 @@ class Flow internal constructor(
     //拉取消息
     fun pull(number: Int) {
         messagePuller.onNext(number)
+    }
+
+    //自动流量控制
+    fun pipeChannels(channelMap:PipeMap) : Completable {
+        val list = channelMap.map { (channel, setup) ->
+            val theEnd = channel.onPull.ignoreElements().toObservable<Int>()
+            Observable.merge(
+                channel.onPull,
+                setup.onIgnoredMessage.takeUntil(theEnd)
+            ).doOnComplete { throw Exception() }
+                .onErrorReturnItem(-1)
+                .map { pull -> Pair(channel, pull) }
+        }
+        val stateMap = channelMap.mapValues { 0 }.toMutableMap()
+        return Observable.fromIterable(list)
+            .flatMap { it }
+            .scan(stateMap, { state, (key, pull) ->
+                if (pull == -1) {
+                    state.remove(key)
+                    return@scan state
+                }
+                state[key] = state[key]?.plus(pull) ?: 0
+                //找最小的pull，并向上游拉取
+                var minPull = Int.MAX_VALUE
+                state.forEach { (_, remain) ->
+                    if (remain < minPull)
+                        minPull = remain
+                }
+                if (minPull != 0) {
+                    messagePuller.onNext(minPull)
+                    state.mapValues { (_, v) -> v - minPull }.toMutableMap()
+                } else
+                    state
+            })
+            .ignoreElements()
     }
 
     data class WindowState(

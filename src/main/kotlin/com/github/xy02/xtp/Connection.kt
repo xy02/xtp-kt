@@ -4,8 +4,9 @@ import com.github.xy02.rx.getSubValues
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Observer
 import io.reactivex.rxjava3.core.Single
+import io.reactivex.rxjava3.subjects.SingleSubject
 import xtp.Frame
-import xtp.Request
+import xtp.Header
 import java.util.concurrent.atomic.AtomicInteger
 
 //XTP连接，底层可使用任意有序的传输协议（例如TCP, WebSocket, QUIC）等
@@ -17,49 +18,49 @@ class Connection(
 
     //    private val getFramesByType = getSubValues(socket.onFrame) { frame -> frame.typeCase }
     private val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
-    private val responseFrames = getFramesByType(Frame.TypeCase.RESPONSE)
     private val endFrames = getFramesByType(Frame.TypeCase.END)
     private val pullFrames = getFramesByType(Frame.TypeCase.PULL)
     private val cancelFrames = getFramesByType(Frame.TypeCase.CANCEL)
     private val fid = AtomicInteger(1)
     internal val newFlowId = fid::getAndIncrement
     internal val watchMessageFrames = messageFrames.getSubValues(Frame::getFlowId)
-    internal val watchResponseFrames = responseFrames.getSubValues(Frame::getFlowId)
     internal val watchEndFrames = endFrames.getSubValues(Frame::getFlowId)
     internal val watchPullFrames = pullFrames.getSubValues(Frame::getFlowId)
     internal val watchCancelFrames = cancelFrames.getSubValues(Frame::getFlowId)
 
-    //    internal val watchMessageFrames = getSubValues(messageFrames, Frame::getFlowId)
-    //    internal val watchResponseFrames = getSubValues(responseFrames, Frame::getFlowId)
-    //    internal val watchEndFrames = getSubValues(endFrames, Frame::getFlowId)
-    //    internal val watchPullFrames = getSubValues(pullFrames, Frame::getFlowId)
-    //    internal val watchCancelFrames = getSubValues(cancelFrames, Frame::getFlowId)
-    private val firstRemoteRequest = watchMessageFrames(0)
-        .map { frame -> Request.parseFrom(frame.message) }
+    private val firstRemoteHeader = watchMessageFrames(0)
+        .map { frame -> Header.parseFrom(frame.message) }
         .doOnNext { if (it.flowId <= 0) throw ProtocolError("first flowId must greater than 0") }
         .take(1).singleOrError()
 
-    //收到对端根请求时新建的响应器
-    val onRootProvider: Single<Provider> = firstRemoteRequest.map { Provider(this, it) }.cache()
+    //收到对端的根流（第一个流）
+    val singleRootFlow: Single<Flow> = firstRemoteHeader.map { Flow(this, it) }.cache()
 
-    //发送根请求（订阅后发送）
-    fun sendRootRequest(req: Request.Builder): Single<Consumer> {
-        val flowId = newFlowId()
-        val request = req.setFlowId(flowId).build()
-        val theResponse = watchResponseFrames(flowId)
-        return theResponse.take(1).singleOrError()
-            .doOnSubscribe {
-                //发送request
-                val messageOfRequest = request.toByteString()
-                val firstFrame = Frame.newBuilder()
-                    .setFlowId(0)
-                    .setMessage(messageOfRequest)
-                frameSender.onNext(firstFrame.build())
-            }
-            .map { frame ->
-                Consumer(this, request, frame.response)
-            }
-            .cache()
+    //根流头发送器
+    private val rootHeaderSender = SingleSubject.create<Header.Builder>()
+
+    //发送根流头后得到的通道
+    val singleRootChannel: Single<Channel> = rootHeaderSender
+        .doOnSuccess {header->
+            if (header.infoType.isNullOrEmpty())
+                throw ProtocolError("require infoType")
+        }
+        .map { it.setFlowId(newFlowId()).build() }
+        .map { Channel(this, it) }
+        .doOnSuccess {
+            val message = it.header.toByteString()
+            val frame = Frame.newBuilder().setFlowId(0).setMessage(message).build()
+            frameSender.onNext(frame)
+        }
+        .cache()
+
+    init {
+        singleRootChannel.subscribe()
     }
 
+    //发送根流头
+    fun sendRootHeader(header:Header.Builder):Single<Channel>{
+        rootHeaderSender.onSuccess(header)
+        return singleRootChannel
+    }
 }
