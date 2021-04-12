@@ -50,7 +50,7 @@ class Channel internal constructor(
         .takeUntil(onRemoteCancel)
         .onErrorComplete()
         .share()
-    private val theEnd = onMessageSent.ignoreElements().toObservable<ByteArray>()
+    private val theEnd = onMessageSent.lastElement().toObservable()
 
     //收到拉取量
     val onPull: Observable<Int> = conn.watchPullFrames(flowId)
@@ -59,8 +59,11 @@ class Channel internal constructor(
         .replay(1)
         .autoConnect()
 
-    private val onAvailableAmount = Observable.merge(onMessageSent.map { -1 }, onPull)
+    //可发送的消息数量
+    val onAvailableAmount = Observable.merge(onMessageSent.map { -1 }, onPull)
         .scan(0, { a, b -> a + b })
+        .replay(1)
+        .autoConnect()
 
     //是否可发送流消息
     val onAvailable: Observable<Boolean> = onAvailableAmount.map { amount -> amount > 0 }

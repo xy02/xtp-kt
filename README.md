@@ -19,7 +19,7 @@ repositories {
 dependencies {
     implementation "io.reactivex.rxjava3:rxjava:3.0.11"
     implementation 'com.google.protobuf:protobuf-javalite:3.14.0'
-    implementation 'com.gitee.xy02:xtp-kt:0.16.0'
+    implementation 'com.gitee.xy02:xtp-kt:0.16.1'
     //implementation 'com.github.xy02:xtp-kt:0.16.0'
 }
 ```

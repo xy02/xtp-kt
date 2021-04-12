@@ -11,6 +11,9 @@ fun <K, V> Observable<V>.getSubValues(keySelector: (V) -> K): (K) -> Observable<
     val m = ConcurrentHashMap<K, MutableSet<ObservableEmitter<V>>>()
 //    val m = mutableMapOf<K,MutableSet<ObservableEmitter<V>>>()
     val theEnd = this
+//        .doOnDispose { println("doOnDispose") }
+//        .doOnComplete { println("doOnComplete") }
+//        .doFinally { println("doFinally") }
         .doOnNext { v: V ->
             val key = keySelector(v)
             m[key]?.forEach { emitter -> emitter.onNext(v) }
@@ -26,8 +29,8 @@ fun <K, V> Observable<V>.getSubValues(keySelector: (V) -> K): (K) -> Observable<
             }
         }
         .onErrorComplete()
-        .ignoreElements()
-        .cache()
+        .share()
+        .lastElement()
     return { key ->
         Observable.create { emitter ->
 //            println("key:$key")

@@ -163,10 +163,11 @@ internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): 
                 sender.onComplete()
             })
         }
-        .takeUntil(sender.ignoreElements().toObservable<Unit>())
+        .takeUntil(sender.lastElement().toObservable())
         .map(Frame::parseFrom)
 //        .observeOn(Schedulers.computation())
-        .share()
+//        .share()
+        .publish().autoConnect()
     sender
         .map(Frame::toByteArray)
 //        .observeOn(Schedulers.io())

@@ -35,7 +35,7 @@ class Flow internal constructor(
 
     private val theEnd = conn.watchEndFrames(flowId)
         .take(1)
-        .takeUntil(messagePuller.ignoreElements().toObservable<Unit>())
+        .takeUntil(messagePuller.lastElement().toObservable())
         .doOnNext { frame ->
             val end = frame.end
             if (end.hasError())
@@ -95,7 +95,7 @@ class Flow internal constructor(
     //自动流量控制
     fun pipeChannels(channelMap:PipeMap) : Completable {
         val list = channelMap.map { (channel, setup) ->
-            val theEnd = channel.onPull.ignoreElements().toObservable<Int>()
+            val theEnd = channel.onPull.lastElement().toObservable()
             Observable.merge(
                 channel.onPull,
                 setup.onIgnoredMessage.takeUntil(theEnd)
