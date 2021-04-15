@@ -5,12 +5,14 @@ import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.PublishSubject
+import io.reactivex.rxjava3.subjects.Subject
 import xtp.Error
 import xtp.Frame
 import xtp.Header
 
 //通道与向此通道发送的消息流的映射关系
 typealias PipeMap = Map<Channel, PipeSetup>
+
 //pipe配置
 class PipeSetup(
     //忽略的消息，会用于向上游的pull计数
@@ -30,8 +32,9 @@ class Flow internal constructor(
 ) {
     private val flowId = header.flowId
     private val frameSender = conn.frameSender
+
     //流消息的拉取器
-    val messagePuller = PublishSubject.create<Int>().toSerialized()
+    val messagePuller: Subject<Int> = PublishSubject.create<Int>().toSerialized()
 
     private val theEnd = conn.watchEndFrames(flowId)
         .take(1)
@@ -43,7 +46,7 @@ class Flow internal constructor(
         }
 
     //收到流消息
-    val onMessage = conn.watchMessageFrames(flowId)
+    val onMessage: Observable<ByteArray> = conn.watchMessageFrames(flowId)
         .map { frame -> frame.message.toByteArray() }
         .takeUntil(theEnd)
         .share()
@@ -93,7 +96,7 @@ class Flow internal constructor(
     }
 
     //自动流量控制
-    fun pipeChannels(channelMap:PipeMap) : Completable {
+    fun pipeChannels(channelMap: PipeMap): Completable {
         val list = channelMap.map { (channel, setup) ->
             val theEnd = channel.onPull.lastElement().toObservable()
             Observable.merge(
@@ -106,7 +109,7 @@ class Flow internal constructor(
         val stateMap = channelMap.mapValues { 0 }.toMutableMap()
         return Observable.fromIterable(list)
             .flatMap { it }
-            .scan(stateMap, { state, (key, pull) ->
+            .scan(stateMap) { state, (key, pull) ->
                 if (pull == -1) {
                     state.remove(key)
                     return@scan state
@@ -123,7 +126,7 @@ class Flow internal constructor(
                     state.mapValues { (_, v) -> v - minPull }.toMutableMap()
                 } else
                     state
-            })
+            }
             .ignoreElements()
     }
 
@@ -140,20 +143,19 @@ class Flow internal constructor(
         val sub = Observable.merge(
             messages.map { -1 }, pulls
         ).scan(
-            WindowState(0, 0, 0),
-            { preState, num ->
-                var (windowSize, increment, decrement) = preState
-                if (num > 0) increment += num else decrement -= num
-                if (decrement > windowSize) throw ProtocolError("input overflow")
-                if (decrement >= windowSize / 2) {
-                    windowSize = windowSize - decrement + increment
-                    if (increment > 0) emitter.onNext(increment)
-                    increment = 0
-                    decrement = 0
-                }
-                WindowState(windowSize, increment, decrement)
+            WindowState(0, 0, 0)
+        ) { preState, num ->
+            var (windowSize, increment, decrement) = preState
+            if (num > 0) increment += num else decrement -= num
+            if (decrement > windowSize) throw ProtocolError("input overflow")
+            if (decrement >= windowSize / 2) {
+                windowSize = windowSize - decrement + increment
+                if (increment > 0) emitter.onNext(increment)
+                increment = 0
+                decrement = 0
             }
-        ).subscribe({ }, emitter::tryOnError, emitter::onComplete)
+            WindowState(windowSize, increment, decrement)
+        }.subscribe({ }, emitter::tryOnError, emitter::onComplete)
         emitter.setDisposable(Disposable.fromAction { sub.dispose() })
     }
 }

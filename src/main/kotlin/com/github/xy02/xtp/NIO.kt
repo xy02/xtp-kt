@@ -1,12 +1,10 @@
 package com.github.xy02.xtp
 
-import com.github.xy02.rx.getSubValues
 import io.reactivex.rxjava3.core.Observable
-import io.reactivex.rxjava3.core.ObservableEmitter
 import io.reactivex.rxjava3.core.Single
-import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import io.reactivex.rxjava3.subjects.PublishSubject
+import io.reactivex.rxjava3.subjects.Subject
 import xtp.Frame
 import java.net.InetSocketAddress
 import java.net.SocketAddress
@@ -15,38 +13,28 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
-import java.util.concurrent.atomic.AtomicInteger
 
 data class TCPServerOptions(
     val address: SocketAddress = InetSocketAddress(8001),
-    val source: SocketsSource = nioSocketsSource(),
-)
-
-data class TCPClientOptions(
-    val source: SocketsSource = nioSocketsSource(),
-)
-
-data class SocketsSource(
-    val selector: Selector,
-    val newGroupId: () -> Int,
-    val getSocketContextByGroupId: (Int) -> Observable<SocketContext>,
-)
-
-data class SocketContext(
-    val groupId: Int,
-    val theSocket: Single<Connection>,
+//    val source: SocketsSource = nioSocketsSource(),
 )
 
 internal data class SocketChannelAttachment(
-    val emitter: ObservableEmitter<ByteArray>,
+    val emitter: Subject<ByteArray>,
     val bufOfLength: ByteBuffer = ByteBuffer.allocate(4).put(0),
     var bufOfBody: ByteBuffer? = null,
 )
 
-fun nioSocketsSource(): SocketsSource {
-    val selector = Selector.open()
-    val sockets = Observable.create<SocketContext> {
-        println("new NIO selector on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+fun nioServer(
+    options: TCPServerOptions = TCPServerOptions(),
+): Observable<Connection> {
+    return Observable.create<Connection> { emitter ->
+        val selector = Selector.open()
+        println("new nioServer selector on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+        val ssc = ServerSocketChannel.open()
+        ssc.configureBlocking(false)
+        ssc.register(selector, SelectionKey.OP_ACCEPT)
+        ssc.socket().bind(options.address)
         while (selector.isOpen) {
             selector.select()
             val ite = selector.selectedKeys().iterator()
@@ -56,36 +44,18 @@ fun nioSocketsSource(): SocketsSource {
                 if (!key.isValid) continue
                 when (key.readyOps()) {
                     SelectionKey.OP_ACCEPT -> {
-                        val ssc = key.channel() as ServerSocketChannel
-                        val groupId = key.attachment() as Int
+//                        val ssc = key.channel() as ServerSocketChannel
 //                        println("OP_ACCEPT: localPort=${ssc.socket().localPort}, groupId=$groupId")
-                        val theSocket = try {
+                        try {
                             val sc = ssc.accept()
 //                            println("sc: port=${sc.socket().port}, localPort=${sc.socket().localPort}")
                             sc.configureBlocking(false)
-                            val socket = newSocketFromSocketChannel(sc, key.selector())
-                            Single.just(socket)
+                            val conn = newConnectionFromSocketChannel(sc, key.selector())
+                            emitter.onNext(conn)
                         } catch (ex: Exception) {
-                            Single.error(ex)
-                        }
-                        it.onNext(SocketContext(groupId, theSocket))
-                    }
-                    SelectionKey.OP_CONNECT -> {
-                        val sc = key.channel() as SocketChannel
-                        val groupId = key.attachment() as Int
-//                        println("OP_CONNECT: localPort=${sc.socket().localPort}, groupId=$groupId")
-                        val theSocket = try {
-                            sc.finishConnect()
-//                            println("sc: port=${sc.socket().port}, localPort=${sc.socket().localPort}")
-                            val socket = newSocketFromSocketChannel(sc, key.selector())
-                            Single.just(socket)
-                        } catch (ex: Exception) {
-                            println("finishConnect: $ex")
-                            sc.close()
+                            println("ServerSocketChannel accept: $ex")
                             key.cancel()
-                            Single.error(ex)
                         }
-                        it.onNext(SocketContext(groupId, theSocket))
                     }
                     SelectionKey.OP_READ -> {
                         val sc = key.channel() as SocketChannel
@@ -99,76 +69,78 @@ fun nioSocketsSource(): SocketsSource {
                 }
             }
         }
-//        println("selector closed tid : ${Thread.currentThread().id}")
-        it.onComplete()
+        emitter.onComplete()
     }.subscribeOn(Schedulers.io())
-    val getSocketContextByGroupId = sockets.getSubValues { it.groupId }
-    val gid = AtomicInteger()
-    val newGroupId = { gid.getAndIncrement() }
-    return SocketsSource(selector, newGroupId, getSocketContextByGroupId)
-}
-
-fun nioServer(
-    options: TCPServerOptions = TCPServerOptions(),
-): Observable<Connection> {
-    val source = options.source
-    val gid = source.newGroupId()
-    return source.getSocketContextByGroupId(gid)
-        .doOnSubscribe {
-            val ssc = ServerSocketChannel.open()
-            ssc.configureBlocking(false)
-            ssc.register(source.selector, SelectionKey.OP_ACCEPT, gid)
-            ssc.socket().bind(options.address)
-        }
-        .subscribeOn(Schedulers.io())
-        .flatMapMaybe { cx ->
-            cx.theSocket
-                .doOnError { ex -> ex.printStackTrace() }
-                .onErrorComplete()
-        }
 }
 
 fun nioClient(
     address: SocketAddress,
-    options: TCPClientOptions = TCPClientOptions(),
 ): Single<Connection> {
-    val source = options.source
-    return Single.fromCallable { source.newGroupId() }
-        .flatMap { gid ->
-//            println("gid $gid")
-            source.getSocketContextByGroupId(gid)
-                .doOnSubscribe {
-                    val sc = SocketChannel.open()
-                    sc.configureBlocking(false)
-                    sc.register(source.selector, SelectionKey.OP_CONNECT, gid)
-                    sc.connect(address)
-                    source.selector.wakeup()
-//                    println("connect")
+    return Single.create<Connection> { emitter ->
+        val selector = Selector.open()
+        println("new nioClient selector on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+        val sc = SocketChannel.open()
+        sc.configureBlocking(false)
+        sc.register(selector, SelectionKey.OP_CONNECT)
+        sc.connect(address)
+        while (selector.isOpen) {
+            selector.select()
+            val ite = selector.selectedKeys().iterator()
+            while (ite.hasNext()) {
+                val key = ite.next()
+                ite.remove()
+                if (!key.isValid) continue
+                when (key.readyOps()) {
+                    SelectionKey.OP_CONNECT -> {
+//                        val sc = key.channel() as SocketChannel
+//                        println("OP_CONNECT: localPort=${sc.socket().localPort}, groupId=$groupId")
+                        try {
+                            sc.finishConnect()
+//                            println("sc: port=${sc.socket().port}, localPort=${sc.socket().localPort}")
+                            val conn = newConnectionFromSocketChannel(sc, key.selector(), true)
+                            emitter.onSuccess(conn)
+                        } catch (ex: Exception) {
+                            println("SocketChannel finishConnect: $ex")
+                            key.cancel()
+                            selector.close()
+                            emitter.onError(ex)
+                        }
+                    }
+                    SelectionKey.OP_READ -> {
+//                        val sc = key.channel() as SocketChannel
+                        val att = key.attachment() as SocketChannelAttachment
+//                        println("sc: ${sc}, att:${att}")
+                        var loop = true
+                        while (loop) {
+                            loop = readSocketChannel(sc, att)
+                        }
+                    }
                 }
-                .subscribeOn(Schedulers.io())
-                .take(1)
-                .singleOrError()
-                .flatMap { cx -> cx.theSocket }
+            }
         }
+//        println("selector close")
+    }.subscribeOn(Schedulers.io())
 }
 
 
-internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Connection {
+internal fun newConnectionFromSocketChannel(
+    sc: SocketChannel,
+    selector: Selector,
+    closeSelector: Boolean = false
+): Connection {
     val sender = PublishSubject.create<Frame>().toSerialized()
-    val frames = Observable
-        .create<ByteArray> { emitter1 ->
-            sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
-            emitter1.setDisposable(Disposable.fromAction {
-                println("dispose")
-                sender.onComplete()
-            })
-        }
+    val onBytes = PublishSubject.create<ByteArray>().toSerialized()
+    sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(onBytes))
+    val onFrame = onBytes
         .takeUntil(sender.lastElement().toObservable())
         .map(Frame::parseFrom)
-//        .observeOn(Schedulers.computation())
-//        .share()
-        .publish().autoConnect()
+        .doOnTerminate {
+            sc.close()
+            if (closeSelector) selector.close()
+        }
+        .share()
     sender
+        .takeUntil(sender.lastElement().toObservable())
         .map(Frame::toByteArray)
 //        .observeOn(Schedulers.io())
         .subscribe(
@@ -198,22 +170,24 @@ internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): 
                 sc.close()
             }
         )
-    return Connection(frames, sender)
+    return Connection(onFrame, sender)
 }
 
 internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment): Boolean {
     val buf = att.bufOfBody ?: att.bufOfLength
+    val emitter = att.emitter
     try {
         val bytesRead = sc.read(buf)
         if (bytesRead == -1) {
             println("read -1")
+            emitter.onComplete()
             sc.close()
-            if (!att.emitter.isDisposed) att.emitter.tryOnError(java.nio.channels.ClosedChannelException())
             return false
         }
     } catch (e: Exception) {
         println("read SocketChannel: $e")
-        if (!att.emitter.isDisposed) att.emitter.tryOnError(e)
+        emitter.onError(e)
+        return false
     }
     if (buf.hasRemaining()) return false
     if (att.bufOfBody == null) {
@@ -224,7 +198,7 @@ internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment):
         buf.put(0)//body长度实际只有3字节，这里把最高位字节设置为0
     } else {
 //        println("read $buf on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
-        att.emitter.onNext(buf.array())
+        emitter.onNext(buf.array())
         att.bufOfBody = null
     }
 //    readSocketChannel(sc, att)

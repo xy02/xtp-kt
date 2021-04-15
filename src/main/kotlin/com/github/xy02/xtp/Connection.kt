@@ -14,7 +14,7 @@ class Connection(
     val onFrame: Observable<Frame>,
     val frameSender: Observer<Frame>,
 ) {
-    private val getFramesByType = onFrame.getSubValues { frame -> frame.typeCase }
+    private val getFramesByType = onFrame.onErrorComplete().getSubValues { frame -> frame.typeCase }
 
     //    private val getFramesByType = getSubValues(socket.onFrame) { frame -> frame.typeCase }
     private val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
@@ -28,7 +28,8 @@ class Connection(
     internal val watchPullFrames = pullFrames.getSubValues(Frame::getFlowId)
     internal val watchCancelFrames = cancelFrames.getSubValues(Frame::getFlowId)
 
-    private val firstRemoteHeader = watchMessageFrames(0)
+    private val onMessage = watchMessageFrames(0)
+    private val firstRemoteHeader = onMessage
         .map { frame -> Header.parseFrom(frame.message) }
         .doOnNext { if (it.flowId <= 0) throw ProtocolError("first flowId must greater than 0") }
         .take(1).singleOrError()
@@ -41,7 +42,7 @@ class Connection(
 
     //发送根流头后得到的通道
     val singleRootChannel: Single<Channel> = rootHeaderSender
-        .doOnSuccess {header->
+        .doOnSuccess { header ->
             if (header.infoType.isNullOrEmpty())
                 throw ProtocolError("require infoType")
         }
@@ -56,11 +57,18 @@ class Connection(
 
     init {
         singleRootChannel.subscribe()
+        singleRootFlow.subscribe()
+        onMessage.subscribe()
     }
 
     //发送根流头
-    fun sendRootHeader(header:Header.Builder):Single<Channel>{
+    fun sendRootHeader(header: Header.Builder): Single<Channel> {
         rootHeaderSender.onSuccess(header)
         return singleRootChannel
+    }
+
+    //关闭连接
+    fun close() {
+        frameSender.onComplete()
     }
 }

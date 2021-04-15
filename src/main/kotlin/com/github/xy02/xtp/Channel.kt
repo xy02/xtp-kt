@@ -6,6 +6,7 @@ import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.subjects.PublishSubject
 import io.reactivex.rxjava3.subjects.SingleSubject
+import io.reactivex.rxjava3.subjects.Subject
 import xtp.End
 import xtp.Error
 import xtp.Frame
@@ -26,31 +27,44 @@ class Channel internal constructor(
     //父通道
     val parentChannel: Channel? = null,
 ) {
-    val flowId = header.flowId
+    private val flowId = header.flowId
     private val availableMessageSender = PublishSubject.create<ByteArray>().toSerialized()
-    val onRemoteCancel = conn.watchCancelFrames(flowId)
-        .take(1)
-        .doOnNext { frame ->
-            val e = frame.cancel
-            throw RemoteError(e.typeName, e.strMessage)
+
+    //流消息的发送器
+    val messageSender: Subject<ByteArray> = PublishSubject.create<ByteArray>().toSerialized()
+
+    private val endOfSending = messageSender
+        .doOnComplete {
+            val frame = Frame.newBuilder()
+                .setFlowId(flowId).setEnd(End.getDefaultInstance()).build()
+            conn.frameSender.onNext(frame)
         }
-        .share()
-    private val onMessageSent = availableMessageSender
-        .map { message -> Frame.newBuilder().setMessage(ByteString.copyFrom(message)) }
-        .concatWith(Single.just(Frame.newBuilder().setEnd(End.getDefaultInstance())))
-        .onErrorReturn { e ->
+        .doOnError { e ->
             val error = Error.newBuilder().setTypeName(e.javaClass.name).setStrMessage(e.message ?: "")
             val end = End.newBuilder().setError(error)
-            Frame.newBuilder().setEnd(end)
+            val frame = Frame.newBuilder().setFlowId(flowId).setEnd(end).build()
+            conn.frameSender.onNext(frame)
         }
+        .lastElement().toObservable().onErrorComplete()
+
+    //远端取消流
+    val onRemoteCancel: Observable<Error> = conn.watchCancelFrames(flowId)
+        .take(1)
+        .takeUntil(endOfSending)
+        .map { frame -> frame.cancel }
+        .replay(1)
+        .autoConnect()
+
+    private val theEnd = onRemoteCancel
+    private val onMessageSent = availableMessageSender
+        .map { message -> Frame.newBuilder().setMessage(ByteString.copyFrom(message)) }
         .doOnNext { fb ->
             val frame = fb.setFlowId(flowId).build()
             conn.frameSender.onNext(frame)
         }
-        .takeUntil(onRemoteCancel)
+        .takeUntil(theEnd)
         .onErrorComplete()
         .share()
-    private val theEnd = onMessageSent.lastElement().toObservable()
 
     //收到拉取量
     val onPull: Observable<Int> = conn.watchPullFrames(flowId)
@@ -60,8 +74,8 @@ class Channel internal constructor(
         .autoConnect()
 
     //可发送的消息数量
-    val onAvailableAmount = Observable.merge(onMessageSent.map { -1 }, onPull)
-        .scan(0, { a, b -> a + b })
+    val onAvailableAmount: Observable<Int> = Observable.merge(onMessageSent.map { -1 }, onPull)
+        .scan(0) { a, b -> a + b }
         .replay(1)
         .autoConnect()
 
@@ -84,7 +98,7 @@ class Channel internal constructor(
                         else emitter.onComplete()
                     },
                 Observable
-                    .generate<ByteArray> { emitter ->
+                    .generate { emitter ->
                         val v = queueOfHeaderToBeSent.poll()
                         if (v != null) {
                             val channel = Channel(conn, v.header, this)
@@ -97,35 +111,32 @@ class Channel internal constructor(
 
     private val onHeaderToBeSent = PublishSubject.create<HeaderToBeSent>().toSerialized()
 
-    //流消息的发送器
-    val messageSender = PublishSubject.create<ByteArray>().toSerialized()
-
     init {
         //side effect
         Observable.merge(
             messageFromQueue,
-            messageSender.withLatestFrom(onAvailable,
-                { message, ok ->
+            messageSender
+                .withLatestFrom(onAvailable) { message, ok ->
                     if (ok) Observable.just(message)
                     else {
                         messageQueue.add(message)
                         Observable.empty()
                     }
-                })
+                }
                 .flatMap { it },
-            onHeaderToBeSent.withLatestFrom(onAvailable,
-                { headerToBeSent, ok ->
+            onHeaderToBeSent
+                .withLatestFrom(onAvailable) { headerToBeSent, ok ->
                     if (ok) {
                         val header = headerToBeSent.header
                         val channel = Channel(conn, header, this)
                         headerToBeSent.onChannel.onSuccess(channel)
                         Maybe.just(header.toByteArray())
                     } else {
-//                        println("headerToBeSent$headerToBeSent")
+                        //                        println("headerToBeSent$headerToBeSent")
                         queueOfHeaderToBeSent.add(headerToBeSent)
                         Maybe.empty()
                     }
-                })
+                }
                 .flatMapMaybe { it }
         ).takeUntil(theEnd)
             .subscribe(availableMessageSender)
