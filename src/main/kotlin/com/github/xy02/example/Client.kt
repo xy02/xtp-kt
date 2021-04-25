@@ -10,7 +10,7 @@ import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-fun main(args: Array<String>) {
+private fun main() {
     //创建TCP客户端
     nioClient(InetSocketAddress("localhost", 8001))
         .subscribeOn(Schedulers.newThread())
@@ -32,7 +32,7 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-fun handlePeer(peer: Peer): Completable {
+private fun handlePeer(peer: Peer): Completable {
     println("onPeer")
     //发送根流头
     val header = Header.newBuilder().setText("ClientInfo")
@@ -44,7 +44,7 @@ fun handlePeer(peer: Peer): Completable {
         }
 }
 
-fun onService(rootChannel: Channel, rootFlow: Flow): Completable {
+private fun onService(rootChannel: Channel, rootFlow: Flow): Completable {
     println("onService, ${rootFlow.header}")
     return Completable.mergeArray(
         //输入
@@ -69,7 +69,7 @@ fun onService(rootChannel: Channel, rootFlow: Flow): Completable {
         }
 }
 
-fun handleAccReply(flow: Flow): Completable {
+private fun handleAccReply(flow: Flow): Completable {
     println("onAccReplyFlow")
     return flow.onMessage
         .doOnSubscribe { flow.pull(200000) }

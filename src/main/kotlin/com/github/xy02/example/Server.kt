@@ -6,7 +6,7 @@ import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import xtp.Header
 import java.text.SimpleDateFormat
 
-fun main(args: Array<String>) {
+private fun main() {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建TCP服务端
     nioServer()
@@ -18,11 +18,11 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-fun handleClientInfo(peer: Peer): Completable {
+private fun handleClientInfo(peer: Peer): Completable {
     println("handleClientInfo")
     return peer.singleRootFlow
         .flatMapCompletable { rootFlow->
-            //验证收到的header.info，略
+            //验证收到流头数据rootFlow.header.text(或data)，略
             //发送根流头
             val header = Header.newBuilder().setText("ServiceInfo")
             peer.sendRootHeader(header)
@@ -33,7 +33,7 @@ fun handleClientInfo(peer: Peer): Completable {
         .onErrorComplete()
 }
 
-fun service(rootFlow: Flow, rootChannel: Channel): Completable {
+private fun service(rootFlow: Flow, rootChannel: Channel): Completable {
     println("onService, ${rootFlow.header}")
     return rootFlow.onChildFlow
         .doOnSubscribe {
@@ -50,7 +50,7 @@ fun service(rootFlow: Flow, rootChannel: Channel): Completable {
 
 //累加收到的请求个数，响应json字符串，形如{"time":"2021-03-01 10:31:59","acc":13}
 private fun acc(flow: Flow, rootChannel: Channel): Completable {
-    //处理新流，验证header.info等
+    //处理新流，验证flow.header.text等
     println("onHeader:${flow.header}")
     //创建下游流
     return rootChannel
