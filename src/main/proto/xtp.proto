@@ -5,7 +5,7 @@ option java_multiple_files = true;
 
 /*
     XTP(X Transfer Protocol)
-    协议版本：0.12
+    协议版本：0.13
     定义应用程序创建的服务端（或客户端）Socket称为“端”，对应的客户端（或服务端）为“对端”，应用自己这“端”为“本端”，
     发送协议消息的“端”为“发送端”，接收协议消息的“端”为“接收端”，一个“端”或“对端”既可以是“发送端”也可以是“接收端”。
 
@@ -53,12 +53,10 @@ message Frame {
 message Header {
     //流标识，必须大于0，本端每开启新流值加1，可以与对端的新流ID相同，但它们是两个不同方向上的不同的流
     int32 flow_id = 1;
-    //信息类型，用于区分不同类型的流的处理方法
-    string info_type = 2;
-    //信息（可空），任意数据
-    bytes info = 3;
-    //消息类型（可空），例："xtp.Header","client.Request","service.Reply"
-    string message_type = 4;
+    //任意文本数据（可空）
+    string text = 2;
+    //任意二进制数据（可空）
+    bytes data = 3;
 }
 
 //结束，流的生命周期结束
@@ -72,5 +70,5 @@ message Error {
     //错误类名
     string type_name = 1;
     //错误消息（可空）
-    string str_message = 2;
+    string text_message = 2;
 }

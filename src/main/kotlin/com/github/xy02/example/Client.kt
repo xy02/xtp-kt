@@ -1,8 +1,6 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Channel
-import com.github.xy02.xtp.Flow
-import com.github.xy02.xtp.nioClient
+import com.github.xy02.xtp.*
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Observable
@@ -16,18 +14,7 @@ fun main(args: Array<String>) {
     //创建TCP客户端
     nioClient(InetSocketAddress("localhost", 8001))
         .subscribeOn(Schedulers.newThread())
-        .flatMap { conn ->
-            println("onConnection")
-            //发送根流头
-            val header = Header.newBuilder().setInfoType("ClientInfo")
-            conn.sendRootHeader(header)
-        }
-        .flatMapCompletable { rootChannel ->
-            rootChannel.conn.singleRootFlow
-                .flatMapCompletable { rootFlow ->
-                    onServiceReply(rootChannel, rootFlow)
-                }
-        }
+        .flatMapCompletable(::handlePeer)
         .repeat()
         .retryWhen { errors ->
             val counter = AtomicInteger()
@@ -45,8 +32,20 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-fun onServiceReply(rootChannel: Channel, rootFlow: Flow): Completable {
-    println("onServiceReply")
+fun handlePeer(peer: Peer): Completable {
+    println("onPeer")
+    //发送根流头
+    val header = Header.newBuilder().setText("ClientInfo")
+    return peer.sendRootHeader(header)
+        .flatMapCompletable { rootChannel ->
+            peer.singleRootFlow.flatMapCompletable { rootFlow ->
+                onService(rootChannel, rootFlow)
+            }
+        }
+}
+
+fun onService(rootChannel: Channel, rootFlow: Flow): Completable {
+    println("onService, ${rootFlow.header}")
     return Completable.mergeArray(
         //输入
         rootFlow.onChildFlow
@@ -56,7 +55,7 @@ fun onServiceReply(rootChannel: Channel, rootFlow: Flow): Completable {
             }
             .take(1)
             .flatMapCompletable { flow ->
-                when (flow.header.infoType) {
+                when (flow.header.text) {
                     "AccReply" -> handleAccReply(flow)
                     else -> Completable.complete()
                 }
@@ -66,7 +65,7 @@ fun onServiceReply(rootChannel: Channel, rootFlow: Flow): Completable {
     ).onErrorComplete()
         .doOnComplete {
             println("onServiceReply doOnComplete")
-            rootChannel.conn.close()
+            close(rootChannel.conn)
         }
 }
 
@@ -88,7 +87,7 @@ fun handleAccReply(flow: Flow): Completable {
 
 
 private fun crazyAcc(rootChannel: Channel): Completable {
-    val header = Header.newBuilder().setInfoType("Acc")
+    val header = Header.newBuilder().setText("Acc")
     return rootChannel.sendHeader(header)
         .flatMapObservable { channel ->
             channel.onPull

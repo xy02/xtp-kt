@@ -27,7 +27,7 @@ internal data class SocketChannelAttachment(
 
 fun nioServer(
     options: TCPServerOptions = TCPServerOptions(),
-): Observable<Connection> {
+): Observable<Peer> {
     return Observable.create<Connection> { emitter ->
         val selector = Selector.open()
         println("new nioServer selector on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
@@ -71,11 +71,12 @@ fun nioServer(
         }
         emitter.onComplete()
     }.subscribeOn(Schedulers.io())
+        .map(::toPeer)
 }
 
 fun nioClient(
     address: SocketAddress,
-): Single<Connection> {
+): Single<Peer> {
     return Single.create<Connection> { emitter ->
         val selector = Selector.open()
         println("new nioClient selector on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
@@ -120,6 +121,7 @@ fun nioClient(
         }
 //        println("selector close")
     }.subscribeOn(Schedulers.io())
+        .map(::toPeer)
 }
 
 

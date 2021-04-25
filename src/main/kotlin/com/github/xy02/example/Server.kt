@@ -1,9 +1,6 @@
 package com.github.xy02.example
 
-import com.github.xy02.xtp.Channel
-import com.github.xy02.xtp.Flow
-import com.github.xy02.xtp.PipeSetup
-import com.github.xy02.xtp.nioServer
+import com.github.xy02.xtp.*
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.plugins.RxJavaPlugins
 import xtp.Header
@@ -13,10 +10,6 @@ fun main(args: Array<String>) {
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
     //创建TCP服务端
     nioServer()
-        .flatMapSingle { conn ->
-            println("onConnection")
-            conn.singleRootFlow
-        }
         .flatMapCompletable(::handleClientInfo)
         .subscribe(
             { },
@@ -25,28 +18,30 @@ fun main(args: Array<String>) {
     readLine()
 }
 
-fun handleClientInfo(rootFlow: Flow): Completable {
+fun handleClientInfo(peer: Peer): Completable {
     println("handleClientInfo")
-    //验证收到的header.info，略
-    val conn = rootFlow.conn
-    //发送根流头
-    val header = Header.newBuilder().setInfoType("ServiceInfo")
-    return conn.sendRootHeader(header)
-        .flatMapCompletable { rootChannel ->
-            service(rootFlow, rootChannel)
+    return peer.singleRootFlow
+        .flatMapCompletable { rootFlow->
+            //验证收到的header.info，略
+            //发送根流头
+            val header = Header.newBuilder().setText("ServiceInfo")
+            peer.sendRootHeader(header)
+                .flatMapCompletable { rootChannel->
+                    service(rootFlow, rootChannel)
+                }
         }
         .onErrorComplete()
 }
 
 fun service(rootFlow: Flow, rootChannel: Channel): Completable {
-    println("onService")
+    println("onService, ${rootFlow.header}")
     return rootFlow.onChildFlow
         .doOnSubscribe {
             //拉取“流”
             rootChannel.onPull.subscribe(rootFlow.messagePuller)
         }
         .flatMapCompletable { flow ->
-            when (flow.header.infoType) {
+            when (flow.header.text) {
                 "Acc" -> acc(flow, rootChannel)
                 else -> Completable.complete()
             }
@@ -60,7 +55,7 @@ private fun acc(flow: Flow, rootChannel: Channel): Completable {
     //创建下游流
     return rootChannel
         .sendHeader(
-            Header.newBuilder().setInfoType("AccReply")
+            Header.newBuilder().setText("AccReply")
         )
         .flatMapCompletable { accReplyChannel ->
             //处理上游发来的数据（未向上游拉取数据时是不会收到数据的）
