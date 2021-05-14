@@ -3,19 +3,36 @@ package com.github.xy02.xtp
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.subjects.SingleSubject
 import xtp.Frame
-import xtp.Header
+import xtp.HandlerInfo
+import xtp.Message
 
 //XTP端（客户端或服务端）
-data class Peer(
-    //XTP连接
-    val conn: Connection,
-    //收到对端的根流（第一个流）
-    val singleRootFlow: Single<Flow>,
-    //根发送通道，只有调用sendRootHeader后才会得到
-    val singleRootChannel: Single<Channel>,
-    //发送根流头，只发送一次，多次调用返回的都是相同的singleRootChannel
-    val sendRootHeader: (header: Header.Builder) -> Single<Channel>,
-)
+//data class Peer(
+//    //XTP连接
+//    val conn: Connection,
+//    val ctx: Context,
+//    //收到对端的根流（第一个流）
+//    val singleRootFlow: Single<Flow>,
+//    //根发送通道，只有调用sendRootHeader后才会得到
+//    val singleRootChannel: Single<Channel>,
+//    //发送根流头，只发送一次，多次调用返回的都是相同的singleRootChannel
+//    val sendRootHeader: (header: Header.Builder) -> Single<Channel>,
+//)
+
+//XTP端（客户端或服务端）
+interface Peer {
+    //收到对端的根处理者
+    val onRootRemoteHandler: Single<RemoteHandler>
+
+    //创建处理者
+    fun createHandler(handlerInfo: HandlerInfo.Builder): Handler
+
+    //声明根处理者信息
+    fun declareRootHandlerInfo(handler: Handler)
+
+    //关闭连接
+    fun close()
+}
 
 //把xtp连接转换为Peer
 fun toPeer(conn: Connection): Peer {
@@ -25,41 +42,48 @@ fun toPeer(conn: Connection): Peer {
 
 private fun newPeer(ctx: Context): Peer {
     val frameSender = ctx.conn.frameSender
-    val newFlowId = ctx.newFlowId
-    val watchMessageFrames = ctx.watchMessageFrames
-    val onMessageFrame = watchMessageFrames(0)
-    val firstRemoteHeader = onMessageFrame
-        .map { frame -> Header.parseFrom(frame.message) }
-        .doOnNext { if (it.flowId <= 0) throw ProtocolError("first flowId must greater than 0") }
-        .take(1).singleOrError()
-    val singleRootFlow: Single<Flow> = firstRemoteHeader.map { newFlow(ctx, it) }.cache()
-    val rootHeaderSender = SingleSubject.create<Header.Builder>()
-    val singleRootChannel: Single<Channel> = rootHeaderSender
-        .map { it.setFlowId(newFlowId()).build() }
-        .map { newChannel(ctx, it) }
+    val onMessageFrame = ctx.watchMessageFrames(0)
+    val firstRemoteHandler = onMessageFrame
+        .map { frame ->
+            val message = frame.message
+            if (message.typeCase != Message.TypeCase.HANDLER_INFO)
+                throw ProtocolError("first message type must be HANDLER_INFO")
+            val info = message.handlerInfo
+            if (info.handlerId <= 0)
+                throw ProtocolError("first handlerId must greater than 0")
+            newRemoteHandler(ctx, info)
+        }
+        .take(1)
+        .singleOrError()
+        .cache()
+    val rootHandlerInfoSender = SingleSubject.create<Handler>()
+    val singleRootHandler = rootHandlerInfoSender
         .doOnSuccess {
-            //发送header
-            val message = it.header.toByteString()
-            val frame = Frame.newBuilder().setFlowId(0).setMessage(message).build()
+            //发送handlerInfo
+            val message = Message.newBuilder().setHandlerInfo(it.info)
+            val frame = Frame.newBuilder().setHandlerId(0)
+                .setMessage(message).build()
             frameSender.onNext(frame)
         }
         .cache()
     //side effect
-    singleRootChannel.subscribe()
-    singleRootFlow.subscribe()
+    singleRootHandler.subscribe()
+    firstRemoteHandler.subscribe()
     onMessageFrame.subscribe()
-    return Peer(
-        conn = ctx.conn,
-        singleRootFlow = singleRootFlow,
-        singleRootChannel = singleRootChannel,
-        sendRootHeader = sendRootHeader(rootHeaderSender, singleRootChannel),
-    )
-}
+    return object : Peer {
+        override val onRootRemoteHandler: Single<RemoteHandler>
+            get() = firstRemoteHandler
 
-private fun sendRootHeader(
-    rootHeaderSender: SingleSubject<Header.Builder>,
-    singleRootChannel: Single<Channel>,
-): (header: Header.Builder) -> Single<Channel> = { header ->
-    rootHeaderSender.onSuccess(header)
-    singleRootChannel
+        override fun createHandler(handlerInfo: HandlerInfo.Builder): Handler {
+            return newHandler(ctx, handlerInfo)
+        }
+
+        override fun declareRootHandlerInfo(handler: Handler) {
+            rootHandlerInfoSender.onSuccess(handler)
+        }
+
+        override fun close() {
+            ctx.conn.frameSender.onComplete()
+        }
+    }
 }

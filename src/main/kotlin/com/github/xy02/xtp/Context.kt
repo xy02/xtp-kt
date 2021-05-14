@@ -8,32 +8,31 @@ import java.util.concurrent.atomic.AtomicInteger
 //私有的上下文
 internal data class Context(
     val conn: Connection,
-    val watchCancelFrames: (flowId: Int) -> Observable<Frame>,
-    val watchPullFrames: (flowId: Int) -> Observable<Frame>,
-    val watchEndFrames: (flowId: Int) -> Observable<Frame>,
     val watchMessageFrames: (flowId: Int) -> Observable<Frame>,
-    val newFlowId: () -> Int,
+    val watchCloseFrames: (flowId: Int) -> Observable<Frame>,
+    val watchYieldFrames: (flowId: Int) -> Observable<Frame>,
+    val watchEndFrames: (flowId: Int) -> Observable<Frame>,
+    val newHandlerId: () -> Int,
 )
 
 internal fun newContext(conn: Connection): Context {
-    val (onFrame, _) = conn
-    val getFramesByType = onFrame.getSubValues { frame -> frame.typeCase }
+    val getFramesByType = conn.onFrame.getSubValues { frame -> frame.typeCase }
     val messageFrames = getFramesByType(Frame.TypeCase.MESSAGE)
+    val closeFrames = getFramesByType(Frame.TypeCase.CLOSE)
+    val yieldFrames = getFramesByType(Frame.TypeCase.YIELD)
     val endFrames = getFramesByType(Frame.TypeCase.END)
-    val pullFrames = getFramesByType(Frame.TypeCase.PULL)
-    val cancelFrames = getFramesByType(Frame.TypeCase.CANCEL)
-    val watchMessageFrames = messageFrames.getSubValues(Frame::getFlowId)
-    val watchEndFrames = endFrames.getSubValues(Frame::getFlowId)
-    val watchPullFrames = pullFrames.getSubValues(Frame::getFlowId)
-    val watchCancelFrames = cancelFrames.getSubValues(Frame::getFlowId)
-    val fid = AtomicInteger(1)
-    val newFlowId = fid::getAndIncrement
+    val watchMessageFrames = messageFrames.getSubValues(Frame::getHandlerId)
+    val watchCloseFrames = closeFrames.getSubValues(Frame::getHandlerId)
+    val watchYieldFrames = yieldFrames.getSubValues(Frame::getHandlerId)
+    val watchEndFrames = endFrames.getSubValues(Frame::getHandlerId)
+    val hid = AtomicInteger(1)
+    val newHandlerId = hid::getAndIncrement
     return Context(
         conn = conn,
-        watchCancelFrames = watchCancelFrames,
-        watchPullFrames = watchPullFrames,
-        watchEndFrames = watchEndFrames,
         watchMessageFrames = watchMessageFrames,
-        newFlowId = newFlowId,
+        watchCloseFrames = watchCloseFrames,
+        watchYieldFrames = watchYieldFrames,
+        watchEndFrames = watchEndFrames,
+        newHandlerId = newHandlerId,
     )
 }

@@ -1,6 +1,7 @@
 package com.github.xy02.xtp
 
 import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Observer
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.schedulers.Schedulers
 import io.reactivex.rxjava3.subjects.PublishSubject
@@ -70,7 +71,9 @@ fun nioServer(
             }
         }
         emitter.onComplete()
-    }.subscribeOn(Schedulers.io())
+    }
+        .subscribeOn(Schedulers.io())
+//        .observeOn(Schedulers.computation())
         .map(::toPeer)
 }
 
@@ -120,7 +123,9 @@ fun nioClient(
             }
         }
 //        println("selector close")
-    }.subscribeOn(Schedulers.io())
+    }
+        .subscribeOn(Schedulers.io())
+//        .observeOn(Schedulers.computation())
         .map(::toPeer)
 }
 
@@ -134,14 +139,21 @@ internal fun newConnectionFromSocketChannel(
     val onBytes = PublishSubject.create<ByteArray>().toSerialized()
     sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(onBytes))
     val onFrame = onBytes
+        .observeOn(Schedulers.computation())
         .takeUntil(sender.lastElement().toObservable())
         .map(Frame::parseFrom)
+//        .doOnNext {
+//            println("onFrame $it")
+//        }
         .doOnTerminate {
             sc.close()
             if (closeSelector) selector.close()
         }
         .share()
     sender
+//        .doOnNext {
+//            println("onSend $it")
+//        }
         .takeUntil(sender.lastElement().toObservable())
         .map(Frame::toByteArray)
 //        .observeOn(Schedulers.io())
@@ -172,7 +184,13 @@ internal fun newConnectionFromSocketChannel(
                 sc.close()
             }
         )
-    return Connection(onFrame, sender)
+//    return Connection(onFrame, sender)
+    return object :Connection{
+        override val onFrame: Observable<Frame>
+            get() = onFrame
+        override val frameSender: Observer<Frame>
+            get() = sender
+    }
 }
 
 internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment): Boolean {
