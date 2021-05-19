@@ -5,9 +5,10 @@ XTP协议的Kotlin实现（XTP是个极简的基于Protobuf的应用层通讯协
 
 ### 特性
 - 支持任意有序传输协议，TCP, WebSocket, QUIC等
-- 支持反压(Backpressure)的多路流，意味着不需要熔断器
-- 高性能(E3-1231, 29%CPU, 156k message/s)
-- 易于构建微服务
+- 支持反压(Backpressure)的多路流
+- 使用响应式API限制数据源的生产，意味着不需要熔断器
+- 高性能(E3-1231, 29%CPU, 156k 消息/秒)
+- 易于构建微服务，可固定嵌套的上下文数据
 
 ### 安装教程
 gradle:

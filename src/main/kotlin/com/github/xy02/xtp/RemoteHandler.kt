@@ -71,8 +71,8 @@ internal fun newRemoteHandler(ctx:Context,handlerInfo: HandlerInfo):RemoteHandle
     val onYieldedData = watchYieldByType(Message.TypeCase.DATA)
         .map { it.data }
         .share()
-    val dataSender = PublishSubject.create<ByteString>()
-    val handlerInfoSender = PublishSubject.create<HandlerInfo>()
+    val dataSender = PublishSubject.create<ByteString>().toSerialized()
+    val handlerInfoSender = PublishSubject.create<HandlerInfo>().toSerialized()
     val availableDataSender = PublishSubject.create<ByteString>().toSerialized()
     val onSentData = availableDataSender
         .doOnNext { data ->
